@@ -152,6 +152,10 @@ direction for the one field that gates whether downstream trusts a payload. The
 proto3 convention (`STATUS_UNSPECIFIED = 0`) exists for exactly this. Changing
 it is free now and a wire-breaking migration later.
 
+**Decided: `STATUS_UNSPECIFIED = 0`.** See the deviations section below. The
+wire format no longer matches §6's numbering; the topic is still empty, which
+is the entire point of deciding it now.
+
 ## Broker tests
 
 `tests/kafka/` — 13 tests against a real Apache Kafka broker in KRaft mode,
@@ -225,6 +229,15 @@ result — no loss, no duplicate.
 
 ## Deliberate deviations from the spec
 
+- **`Result.Status` has `STATUS_UNSPECIFIED = 0`, not §6's `SUCCESS = 0`.**
+  Proto3 has no presence for enums, so under the spec's numbering an unset
+  `status` decoded as SUCCESS — a partial write or a producer bug read as "this
+  call succeeded", for the one field that gates whether downstream trusts a
+  payload. The codecs enforce the fix at the boundary: encoding an unspecified
+  status raises, and decoding one is `DecodeError` (poison), so neither a buggy
+  producer nor a partial record can masquerade as a success. Decided while the
+  topic is still empty, where it is free; on a live topic it would be a
+  wire-breaking migration.
 - **`process()` returns `FunctionResult`, not §5.1's `Result`.** §6's `Result` is
   the wire envelope, which the SDK stamps with offsets, attempts and timestamps.
   Returning it from `process` would leak the envelope into every function and

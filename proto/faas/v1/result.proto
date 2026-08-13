@@ -16,17 +16,19 @@ message Result {
   string function_id = 3;
   string function_version = 4;
 
-  // NOTE: SUCCESS = 0 is taken verbatim from the spec, but it means an unset
-  // status field decodes as SUCCESS -- a bug, a partial write or a
-  // mis-configured producer reads as "this call succeeded". For the one field
-  // that gates whether downstream trusts a payload, that is the wrong failure
-  // direction. The proto3 convention (STATUS_UNSPECIFIED = 0) exists for
-  // exactly this. Changing it is free while the topic is empty and a
-  // wire-breaking migration afterwards, so it is worth deciding now.
+  // STATUS_UNSPECIFIED = 0 is the proto3 convention and the point of this
+  // choice: an unset status field must read as "no status", not as "this call
+  // succeeded". Under the spec's original SUCCESS = 0, a bug, a partial write
+  // or a mis-built message decoded as a success -- the wrong failure direction
+  // for the one field that gates whether downstream trusts a payload. Any
+  // consumer that decodes a message whose status was never set is looking at a
+  // producer bug, and the SDK refuses both directions: it will not encode an
+  // unspecified status and will not decode one without an error.
   enum Status {
-    SUCCESS = 0;
-    FAILED = 1;
-    SKIPPED = 2;
+    STATUS_UNSPECIFIED = 0;
+    SUCCESS = 1;
+    FAILED = 2;
+    SKIPPED = 3;
   }
   Status status = 5;
 

@@ -66,6 +66,12 @@ class JsonCodec:
         ).encode()
 
     def encode_result(self, result: Result) -> bytes:
+        if result.status is Status.STATUS_UNSPECIFIED:
+            raise ValueError(
+                "refusing to encode an unspecified status: a record without a "
+                "status reads as nothing, and a consumer cannot tell it apart "
+                "from a producer bug"
+            )
         return json.dumps(
             {
                 "envelope_version": result.envelope_version,
@@ -98,12 +104,18 @@ class JsonCodec:
     def decode_result(self, raw: bytes) -> Result:
         data = json.loads(raw)
         error = data.get("error")
+        status = Status(data["status"])
+        if status is Status.STATUS_UNSPECIFIED:
+            raise DecodeError(
+                "Result has no status set (STATUS_UNSPECIFIED); it was written "
+                "by something that does not know the schema"
+            )
         return Result(
             envelope_version=data["envelope_version"],
             call_id=data["call_id"],
             function_id=data["function_id"],
             function_version=data["function_version"],
-            status=Status(data["status"]),
+            status=status,
             error=(
                 None
                 if error is None

@@ -166,17 +166,66 @@ def test_large_offsets_survive(codec):
     assert codec.decode_result(codec.encode_result(_result(input_offset=big))).input_offset == big
 
 
+# -- the unspecified status -------------------------------------------------
+#
+# The whole reason STATUS_UNSPECIFIED exists: proto3 has no presence for
+# enums, so an unset status field would otherwise decode as the zero value.
+# Under the spec's original numbering that zero was SUCCESS -- a partial
+# write or a producer bug read as "this call succeeded". The codecs now
+# refuse both directions: nothing on the wire may carry an unspecified
+# status, and nothing without one may be read.
+
+
+def test_an_unset_status_is_poison_not_success(codec):
+    """A message whose status was never set -- the partial write -- must not
+    decode as a success (or as anything at all)."""
+    from faas.v1 import result_pb2
+
+    message = result_pb2.Result()
+    message.call_id = "call-1"
+    message.function_id = "duration_rms"
+    message.function_version = "1.0.0"
+    # status deliberately left unset.
+
+    with pytest.raises(DecodeError, match="no status"):
+        codec.decode_result(message.SerializeToString())
+
+
+def test_an_unspecified_status_is_never_encoded(codec):
+    """The SDK builds every result it emits, so an unspecified status on the
+    wire can only come from a bug -- fail at the boundary."""
+    with pytest.raises(ValueError, match="unspecified"):
+        codec.encode_result(_result(status=Status.STATUS_UNSPECIFIED))
+
+
+def test_the_json_codec_refuses_unspecified_the_same_way():
+    """Both codecs are the same contract; a plain-text dev topic must not be
+    allowed to smuggle the exact bug the wire format now refuses."""
+    from faas_sdk.codec import JsonCodec
+
+    json_codec = JsonCodec()
+    with pytest.raises(ValueError, match="unspecified"):
+        json_codec.encode_result(_result(status=Status.STATUS_UNSPECIFIED))
+
+    partial = json_codec.encode_result(_result()).replace(b'"status": 1', b'"status": 0')
+    with pytest.raises(DecodeError, match="no status"):
+        json_codec.decode_result(partial)
+
+
 # -- schema agreement ------------------------------------------------------
 
 
 def test_status_numbering_matches_the_python_enum():
     """models.Status and the wire enum must not drift: they are the same
-    contract expressed twice, and a mismatch silently relabels every result."""
+    contract expressed twice, and a mismatch silently relabels every result.
+    STATUS_UNSPECIFIED = 0 is the load-bearing half: it is what makes an unset
+    status a bug instead of a silent success."""
     from faas.v1 import result_pb2
 
-    assert result_pb2.Result.Status.SUCCESS == Status.SUCCESS
-    assert result_pb2.Result.Status.FAILED == Status.FAILED
-    assert result_pb2.Result.Status.SKIPPED == Status.SKIPPED
+    assert result_pb2.Result.Status.STATUS_UNSPECIFIED == Status.STATUS_UNSPECIFIED == 0
+    assert result_pb2.Result.Status.SUCCESS == Status.SUCCESS == 1
+    assert result_pb2.Result.Status.FAILED == Status.FAILED == 2
+    assert result_pb2.Result.Status.SKIPPED == Status.SKIPPED == 3
 
 
 def test_field_numbers_match_the_spec():

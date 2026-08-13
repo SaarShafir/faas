@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x66\x61\x61s/v1/result.proto\x12\x07\x66\x61\x61s.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa5\x04\n\x06Result\x12\x18\n\x10\x65nvelope_version\x18\x01 \x01(\x05\x12\x0f\n\x07\x63\x61ll_id\x18\x02 \x01(\t\x12\x13\n\x0b\x66unction_id\x18\x03 \x01(\t\x12\x18\n\x10\x66unction_version\x18\x04 \x01(\t\x12&\n\x06status\x18\x05 \x01(\x0e\x32\x16.faas.v1.Result.Status\x12\x1d\n\x05\x65rror\x18\x06 \x01(\x0b\x32\x0e.faas.v1.Error\x12\x1e\n\x16payload_schema_version\x18\x07 \x01(\t\x12\x1c\n\x14payload_content_type\x18\x08 \x01(\t\x12\x11\n\x07payload\x18\t \x01(\x0cH\x00\x12\x15\n\x0bpayload_ref\x18\n \x01(\tH\x00\x12\x18\n\x10input_object_key\x18\x0b \x01(\t\x12\x14\n\x0cinput_offset\x18\x0c \x01(\x03\x12\x0f\n\x07\x61ttempt\x18\r \x01(\x05\x12/\n\x0bingested_at\x18\x0e \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nstarted_at\x18\x0f \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x30\n\x0c\x63ompleted_at\x18\x10 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\".\n\x06Status\x12\x0b\n\x07SUCCESS\x10\x00\x12\n\n\x06\x46\x41ILED\x10\x01\x12\x0b\n\x07SKIPPED\x10\x02\x42\x0e\n\x0cpayload_body\"9\n\x05\x45rror\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tretryable\x18\x03 \x01(\x08\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x66\x61\x61s/v1/result.proto\x12\x07\x66\x61\x61s.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbd\x04\n\x06Result\x12\x18\n\x10\x65nvelope_version\x18\x01 \x01(\x05\x12\x0f\n\x07\x63\x61ll_id\x18\x02 \x01(\t\x12\x13\n\x0b\x66unction_id\x18\x03 \x01(\t\x12\x18\n\x10\x66unction_version\x18\x04 \x01(\t\x12&\n\x06status\x18\x05 \x01(\x0e\x32\x16.faas.v1.Result.Status\x12\x1d\n\x05\x65rror\x18\x06 \x01(\x0b\x32\x0e.faas.v1.Error\x12\x1e\n\x16payload_schema_version\x18\x07 \x01(\t\x12\x1c\n\x14payload_content_type\x18\x08 \x01(\t\x12\x11\n\x07payload\x18\t \x01(\x0cH\x00\x12\x15\n\x0bpayload_ref\x18\n \x01(\tH\x00\x12\x18\n\x10input_object_key\x18\x0b \x01(\t\x12\x14\n\x0cinput_offset\x18\x0c \x01(\x03\x12\x0f\n\x07\x61ttempt\x18\r \x01(\x05\x12/\n\x0bingested_at\x18\x0e \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nstarted_at\x18\x0f \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x30\n\x0c\x63ompleted_at\x18\x10 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"F\n\x06Status\x12\x16\n\x12STATUS_UNSPECIFIED\x10\x00\x12\x0b\n\x07SUCCESS\x10\x01\x12\n\n\x06\x46\x41ILED\x10\x02\x12\x0b\n\x07SKIPPED\x10\x03\x42\x0e\n\x0cpayload_body\"9\n\x05\x45rror\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tretryable\x18\x03 \x01(\x08\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,9 +33,9 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'faas.v1.result_pb2', _globa
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_RESULT']._serialized_start=67
-  _globals['_RESULT']._serialized_end=616
+  _globals['_RESULT']._serialized_end=640
   _globals['_RESULT_STATUS']._serialized_start=554
-  _globals['_RESULT_STATUS']._serialized_end=600
-  _globals['_ERROR']._serialized_start=618
-  _globals['_ERROR']._serialized_end=675
+  _globals['_RESULT_STATUS']._serialized_end=624
+  _globals['_ERROR']._serialized_start=642
+  _globals['_ERROR']._serialized_end=699
 # @@protoc_insertion_point(module_scope)

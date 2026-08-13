@@ -74,6 +74,12 @@ class ProtobufCodec:
                 "payload and payload_ref are mutually exclusive; the claim check "
                 "sets exactly one"
             )
+        if result.status is Status.STATUS_UNSPECIFIED:
+            raise ValueError(
+                "refusing to encode an unspecified status: a record without a "
+                "status reads as nothing, and a consumer cannot tell it apart "
+                "from a producer bug"
+            )
 
         message = result_pb2.Result(
             envelope_version=result.envelope_version,
@@ -110,12 +116,21 @@ class ProtobufCodec:
             raise DecodeError(f"not a valid Result: {exc}") from exc
 
         which = message.WhichOneof("payload_body")
+        status = Status(message.status)
+        if status is Status.STATUS_UNSPECIFIED:
+            # The producer never set it. Proto3 has no presence for enums, so
+            # this is exactly the partial write or mis-built message that
+            # STATUS_UNSPECIFIED exists to surface -- poison, not a status.
+            raise DecodeError(
+                "Result has no status set (STATUS_UNSPECIFIED); it was written "
+                "by something that does not know the schema"
+            )
         return Result(
             envelope_version=message.envelope_version or ENVELOPE_VERSION,
             call_id=message.call_id,
             function_id=message.function_id,
             function_version=message.function_version,
-            status=Status(message.status),
+            status=status,
             error=(
                 ErrorInfo(
                     code=message.error.code,

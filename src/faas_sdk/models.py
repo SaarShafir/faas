@@ -17,11 +17,19 @@ ENVELOPE_VERSION = 1
 
 
 class Status(enum.IntEnum):
-    """Spec §6 Result.Status."""
+    """Spec §6 Result.Status.
 
-    SUCCESS = 0
-    FAILED = 1
-    SKIPPED = 2
+    STATUS_UNSPECIFIED is the proto3 zero: an unset status on the wire decodes
+    as it, not as SUCCESS. The spec's original `SUCCESS = 0` made a partial
+    write read as a success -- the wrong failure direction for the one field
+    that gates whether downstream trusts a payload. The codecs refuse both
+    directions: encoding an unspecified status, and decoding one.
+    """
+
+    STATUS_UNSPECIFIED = 0
+    SUCCESS = 1
+    FAILED = 2
+    SKIPPED = 3
 
 
 @dataclass(frozen=True)

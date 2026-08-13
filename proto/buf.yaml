@@ -6,14 +6,6 @@ modules:
 lint:
   use:
     - DEFAULT
-  except:
-    # Spec §6 defines `enum Status { SUCCESS = 0; ... }`. Buf's DEFAULT rules
-    # want STATUS_UNSPECIFIED = 0 and STATUS_-prefixed values. The spec wins
-    # here so the wire format matches the document everyone is reading, but see
-    # the note in result.proto -- the zero value is worth revisiting before the
-    # topic has data on it.
-    - ENUM_ZERO_VALUE_SUFFIX
-    - ENUM_VALUE_PREFIX
 
 breaking:
   use:

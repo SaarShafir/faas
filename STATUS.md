@@ -69,6 +69,16 @@ Everything below is installed and working on this machine.
 
 ## Decisions worth knowing about
 
+**`Status` zero is now `STATUS_UNSPECIFIED`, not §6's `SUCCESS = 0`** — the
+"decide before anything else ships" item is decided. Proto3 has no presence for
+enums, so under the spec's numbering an unset `status` decoded as SUCCESS: a
+partial write or producer bug read as a success, for the one field gating
+whether downstream trusts a payload. Both codecs now refuse both directions
+(encoding an unspecified status raises; decoding one is `DecodeError`), the
+`buf.yaml` lint exceptions that existed only for §6's numbering are gone, and
+the generated `result_pb2.py` is regenerated. Free because the topic is empty;
+documented as a deliberate deviation in the README.
+
 **The hydrator runs on the SDK's runner, not its own loop.** A transcode is
 seconds of work between polls — the same §5.2 problem a function has. Only the
 two ends differ: `JsonSourceDecoder` replaces the reference decoder and
@@ -128,15 +138,12 @@ dropping `-ar` from the transcoder fails 10.
 
 ## Next
 
-### Decide before anything else ships
+### Decided
 
-**The `Status` enum zero value.** §6 specifies `SUCCESS = 0`, which is what is
-implemented so the wire matches the document. But proto3 has no presence for
-enums: an unset `status` decodes as `SUCCESS`. A partial write or a producer bug
-therefore reads as "this call succeeded" — the wrong failure direction for the
-one field gating whether downstream trusts a payload. `STATUS_UNSPECIFIED = 0`
-exists for exactly this. **Free to change now, wire-breaking migration once the
-topic has data.** See `proto/faas/v1/result.proto`.
+**The `Status` enum zero value is `STATUS_UNSPECIFIED`, decided.** See
+"Decisions worth knowing about" above. The one remaining decision is the
+hydration-failure gap (P1 below) — the enum was the last thing explicitly
+gating step 5.
 
 ### P0 — close before step 5
 
