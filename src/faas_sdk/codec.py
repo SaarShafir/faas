@@ -102,40 +102,50 @@ class JsonCodec:
         ).encode()
 
     def decode_result(self, raw: bytes) -> Result:
-        data = json.loads(raw)
-        error = data.get("error")
-        status = Status(data["status"])
-        if status is Status.STATUS_UNSPECIFIED:
-            raise DecodeError(
-                "Result has no status set (STATUS_UNSPECIFIED); it was written "
-                "by something that does not know the schema"
-            )
-        return Result(
-            envelope_version=data["envelope_version"],
-            call_id=data["call_id"],
-            function_id=data["function_id"],
-            function_version=data["function_version"],
-            status=status,
-            error=(
-                None
-                if error is None
-                else ErrorInfo(
-                    code=error["code"],
-                    message=error["message"],
-                    retryable=error["retryable"],
+        # Same normalization as decode_reference: anything that is not a valid
+        # result is DecodeError, never a raw exception -- the sink's poison
+        # path keys on it (spec §5.4).
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise DecodeError("result must be an object")
+            error = data.get("error")
+            status = Status(data["status"])
+            if status is Status.STATUS_UNSPECIFIED:
+                raise DecodeError(
+                    "Result has no status set (STATUS_UNSPECIFIED); it was written "
+                    "by something that does not know the schema"
                 )
-            ),
-            payload_schema_version=data["payload_schema_version"],
-            payload_content_type=data["payload_content_type"],
-            payload=_b64d(data.get("payload")) or None,
-            payload_ref=data.get("payload_ref"),
-            input_object_key=data["input_object_key"],
-            input_offset=data["input_offset"],
-            attempt=data["attempt"],
-            ingested_at=_parse_ts(data.get("ingested_at")),
-            started_at=_parse_ts(data.get("started_at")),
-            completed_at=_parse_ts(data.get("completed_at")),
-        )
+            return Result(
+                envelope_version=data["envelope_version"],
+                call_id=data["call_id"],
+                function_id=data["function_id"],
+                function_version=data["function_version"],
+                status=status,
+                error=(
+                    None
+                    if error is None
+                    else ErrorInfo(
+                        code=error["code"],
+                        message=error["message"],
+                        retryable=error["retryable"],
+                    )
+                ),
+                payload_schema_version=data["payload_schema_version"],
+                payload_content_type=data["payload_content_type"],
+                payload=_b64d(data.get("payload")) or None,
+                payload_ref=data.get("payload_ref"),
+                input_object_key=data["input_object_key"],
+                input_offset=data["input_offset"],
+                attempt=data["attempt"],
+                ingested_at=_parse_ts(data.get("ingested_at")),
+                started_at=_parse_ts(data.get("started_at")),
+                completed_at=_parse_ts(data.get("completed_at")),
+            )
+        except DecodeError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DecodeError(f"malformed Result: {exc}") from exc
 
 
 def _b64e(raw: bytes | None) -> str | None:

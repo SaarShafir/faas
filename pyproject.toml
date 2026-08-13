@@ -44,10 +44,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # `faas` is the generated protobuf tree (proto package faas.v1), committed so a
 # function image build never needs protoc.
-packages = ["src/faas_sdk", "src/faas_hydrator", "src/faas"]
+packages = ["src/faas_sdk", "src/faas_hydrator", "src/faas_sink", "src/faas"]
 
 [project.scripts]
 faas-hydrator = "faas_hydrator.main:main"
+faas-sink = "faas_sink.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

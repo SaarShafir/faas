@@ -26,10 +26,18 @@ class DeadLetterQueue:
         *,
         attempt: int = 1,
         call_id: str | None = None,
+        function_id: str | None = None,
+        function_version: str | None = None,
     ) -> None:
+        """DLQ one record. `function_id`/`function_version` override the
+        config's: a function's runner never passes them, while the sink reads
+        them off the §6 composite key of a poison result -- whose producer is
+        a *different* function, and the DLQ record should say which."""
+        function_id = function_id or self.config.function_id
+        function_version = function_version or self.config.function_version
         headers = {
-            "faas.function_id": self.config.function_id.encode(),
-            "faas.function_version": self.config.function_version.encode(),
+            "faas.function_id": function_id.encode(),
+            "faas.function_version": function_version.encode(),
             "faas.group_id": self.config.group_id.encode(),
             "faas.error.code": error.code.encode(),
             "faas.error.message": error.message.encode()[:1024],
