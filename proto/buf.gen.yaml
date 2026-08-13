@@ -1,0 +1,15 @@
+version: v2
+
+# Output lands in src/ so the proto package `faas.v1` becomes the Python
+# package `faas.v1`, which is what protoc's generated absolute imports expect.
+# Generated code is committed: there is no codegen step in the function image
+# build, and a function author should never need protoc installed.
+
+managed:
+  enabled: true
+
+plugins:
+  - remote: buf.build/protocolbuffers/python
+    out: ../src
+  - remote: buf.build/protocolbuffers/pyi
+    out: ../src

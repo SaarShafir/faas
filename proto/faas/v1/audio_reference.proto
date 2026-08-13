@@ -1,0 +1,38 @@
+// Spec §4.2 -- the claim check published to the internal topic.
+//
+// Audio never travels through Kafka. The hydrator reads metadata once, fetches
+// audio once, and publishes this reference; functions read from S3
+// independently. That is what allows independent lag while preserving
+// read-once semantics.
+//
+// Metadata lives here and nowhere else -- deliberately not in FLAC tags (§4.1),
+// so the schema can evolve without rewriting objects.
+
+syntax = "proto3";
+
+package faas.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message AudioReference {
+  int32 envelope_version = 1;
+  string call_id = 2;
+
+  // Deterministic: {call_id}.flac (§4.1).
+  string object_key = 3;
+
+  // Canonical form is 16 kHz, 16-bit, mono (§4.1). Carried explicitly so a
+  // function can reject a mismatch rather than silently mis-decode.
+  int32 sample_rate = 4;
+  int32 channels = 5;
+  double duration_seconds = 6;
+
+  // From the source metadata, not from ingest time here.
+  google.protobuf.Timestamp ingested_at = 7;
+  google.protobuf.Timestamp hydrated_at = 8;
+
+  // Opaque passthrough of the original metadata. Opaque on purpose: the
+  // hydrator stays dumb (§4.1) and this schema does not become a union of
+  // every upstream metadata format.
+  bytes source_metadata = 9;
+}

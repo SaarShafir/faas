@@ -1,0 +1,20 @@
+# The hydrator declared the same way a function is (§8), because it is a
+# consumer group with a DLQ like any other. `results_topic` is the internal
+# topic: the hydrator's output is what every function reads.
+#
+# in_flight stays low on purpose. The work is one Audio API GET, one ffmpeg
+# process and one S3 PUT -- mostly waiting, but ffmpeg is a real subprocess, so
+# depth here multiplies memory and CPU per pod. Scale replicas on lag instead
+# (§11); at ~17 files/sec a handful of pods is the whole steady state.
+function_id: hydrator
+function_version: "1.0.0"
+image: registry/faas-hydrator:1.0.0
+input_topic: faas.calls.raw
+results_topic: faas.audio.internal
+resources:
+  cpu: 2
+  memory: 2Gi
+in_flight: 4
+per_file_timeout_seconds: 120
+retry_budget: 3
+dlq_topic: faas.dlq.hydrator

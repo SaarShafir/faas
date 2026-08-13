@@ -1,0 +1,59 @@
+// Spec §6 -- stable envelope, opaque function-owned payload.
+//
+// That split is the whole design: a function can ship a new output shape
+// without a topic-wide schema migration. The envelope is validated topic-wide;
+// payloads are validated per function against a registry keyed by function_id.
+
+syntax = "proto3";
+
+package faas.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message Result {
+  int32 envelope_version = 1;
+  string call_id = 2;
+  string function_id = 3;
+  string function_version = 4;
+
+  // NOTE: SUCCESS = 0 is taken verbatim from the spec, but it means an unset
+  // status field decodes as SUCCESS -- a bug, a partial write or a
+  // mis-configured producer reads as "this call succeeded". For the one field
+  // that gates whether downstream trusts a payload, that is the wrong failure
+  // direction. The proto3 convention (STATUS_UNSPECIFIED = 0) exists for
+  // exactly this. Changing it is free while the topic is empty and a
+  // wire-breaking migration afterwards, so it is worth deciding now.
+  enum Status {
+    SUCCESS = 0;
+    FAILED = 1;
+    SKIPPED = 2;
+  }
+  Status status = 5;
+
+  // Unset unless status is FAILED.
+  Error error = 6;
+
+  string payload_schema_version = 7;
+  string payload_content_type = 8;
+
+  // Claim check (§6): inline under 256 KB, else an S3 key. Function authors
+  // call the same API either way and never see this branch.
+  oneof payload_body {
+    bytes payload = 9;
+    string payload_ref = 10;
+  }
+
+  string input_object_key = 11;
+  int64 input_offset = 12;
+  int32 attempt = 13;
+
+  google.protobuf.Timestamp ingested_at = 14;
+  google.protobuf.Timestamp started_at = 15;
+  google.protobuf.Timestamp completed_at = 16;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}
