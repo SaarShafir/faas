@@ -4,13 +4,21 @@ Working notes against [`faas-spec.md`](faas-spec.md). [`README.md`](README.md)
 explains how the thing works; this is what is done, what was decided, and what
 comes next.
 
-Last updated: 2026-08-13.
+Last updated: 2026-08-14.
 
 The P0 rebalance gap is closed: `tests/kafka/test_rebalance.py` moves
 partitions between two consumers under a live coordinator with committed and
 uncommitted work in flight, and proves the §5.2 drain commits what finished,
 cancels what did not, and redelivers exactly the unfinished file to the new
 owner -- nothing lost, nothing duplicated.
+
+Step 5 is built: the results sink (`src/faas_sink/`) lands every Result into a
+SQLite store on the §6 composite key, DLQs poison on arrival (now including a
+record whose status was never set) and commits the offset, and FAILED and
+SKIPPED land exactly like SUCCESS ones -- so "no result yet" is distinguishable
+from "no result ever" for real. 19 unit tests plus a real-broker suite
+(`tests/kafka/test_sink_broker.py`) prove the loop, the store and the restart
+case.
 
 ---
 
@@ -22,7 +30,7 @@ owner -- nothing lost, nothing duplicated.
 | 2 | Protobuf schemas — `AudioReference`, `Result`, Buf setup | **done** |
 | 3 | Hydrator | **done** |
 | 4 | One trivial reference function, end to end | **done** |
-| 5 | Results sink service | not started |
+| 5 | Results sink service | **done** |
 | 6 | Autoscaling on lag | not started |
 | 7 | Aggregator + `call_complete` | not started |
 | 8 | Deletion path | not started |
@@ -34,21 +42,22 @@ wire format.
 
 ## Tests
 
-210 total. The unit suite runs in ~7s and is the default; the broker and object
+233 total. The unit suite runs in ~7s and is the default; the broker and object
 store suites need Docker and run in ~4min combined.
 
 ```bash
-pytest                 # 191 unit tests
-pytest -m kafka        # 13 broker tests, needs Docker
+pytest                 # 213 unit tests
+pytest -m kafka        # 14 broker tests, needs Docker
 pytest -m minio        # 6 object store tests, needs Docker
 ```
 
 | Area | Tests |
 |---|---|
-| SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 95 |
+| SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 98 |
 | Hydrator (flac, transcode, metadata, hydrator, pipeline) | 72 |
 | Reference function + contract | 24 |
-| Broker (poll interval, commits, partitioner, cooperative rebalance) | 13 |
+| Sink (store round trips, idempotence, WAL, loop, DLQ poison) | 19 |
+| Broker (poll interval, commits, partitioner, cooperative rebalance, sink) | 14 |
 | Object store (MinIO: round trip, error mapping, claim check, dead key, real-store contract) | 6 |
 
 ## Environment
@@ -145,12 +154,12 @@ dropping `-ar` from the transcoder fails 10.
 hydration-failure gap (P1 below) — the enum was the last thing explicitly
 gating step 5.
 
-### P0 — close before step 5
+### P0 — close before step 6
 
 - **CI.** Nothing runs automatically. Needs: unit suite on every push, `buf lint`
   and `buf breaking` (neither has ever run — no buf binary locally), broker
-  suite on changes to `kafka.py`/`runner.py`, object store suite on changes to
-  `objectstore.py`, or all three nightly.
+  suite on changes to `kafka.py`/`runner.py`/`sink.py`, object store suite on
+  changes to `objectstore.py`, or all three nightly.
 
 *The real rebalance test is done* — see the note at the top. Two consumers in a
 group, partitions moving, `_on_revoke` draining in-flight work under a live
@@ -158,7 +167,9 @@ coordinator, with the committed/uncommitted split asserted on both sides.
 
 ### P1 — the next build-order step
 
-- **Step 5, results sink.** Functions do not own database connections (§4.4).
+- **Step 6, autoscaling on lag.** `kafka-exporter` feeds the autoscaler and is
+  the source of truth (§5.5, §11); the SDK-side gauge is a cross-check that
+  needs a broker to be worth writing.
 - **Decide the hydration-failure gap.** A call that fails hydration is invisible
   downstream: no reference, so no function sees it and the aggregator never
   expects it. The DLQ holds the input for replay — the spec's answer — but
