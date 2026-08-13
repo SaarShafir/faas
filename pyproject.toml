@@ -56,9 +56,10 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 # Broker tests need Docker and take tens of seconds; the unit suite finishes in
 # seconds and that is worth protecting. Run them with `pytest -m kafka`.
-addopts = "-q -m 'not kafka'"
+addopts = "-q -m 'not kafka and not minio'"
 markers = [
     "kafka: needs a real Kafka broker in Docker (excluded by default)",
+    "minio: needs a real MinIO object store in Docker (excluded by default)",
 ]
 
 [tool.ruff]

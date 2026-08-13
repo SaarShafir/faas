@@ -34,12 +34,13 @@ wire format.
 
 ## Tests
 
-204 total. The unit suite runs in ~7s and is the default; the broker suite needs
-Docker and runs in ~4min.
+210 total. The unit suite runs in ~7s and is the default; the broker and object
+store suites need Docker and run in ~4min combined.
 
 ```bash
 pytest                 # 191 unit tests
 pytest -m kafka        # 13 broker tests, needs Docker
+pytest -m minio        # 6 object store tests, needs Docker
 ```
 
 | Area | Tests |
@@ -48,17 +49,19 @@ pytest -m kafka        # 13 broker tests, needs Docker
 | Hydrator (flac, transcode, metadata, hydrator, pipeline) | 72 |
 | Reference function + contract | 24 |
 | Broker (poll interval, commits, partitioner, cooperative rebalance) | 13 |
+| Object store (MinIO: round trip, error mapping, claim check, dead key, real-store contract) | 6 |
 
 ## Environment
 
 Everything below is installed and working on this machine.
 
 - `.venv` — pytest, ruff, PyYAML, protobuf, grpcio-tools, soundfile, numpy,
-  confluent-kafka, testcontainers (unused, see below).
+  confluent-kafka, boto3, testcontainers (unused, see below).
 - **ffmpeg 9.0** via winget (`Gyan.FFmpeg`). On PATH for new shells; older shells
   need a restart. Without it the transcode and contract tests skip rather than
   fail — but they are the ones worth having.
-- **Docker** required only for `pytest -m kafka`. Pulls `apache/kafka:latest`.
+- **Docker** required only for `pytest -m kafka` and `pytest -m minio`. Pulls
+  `apache/kafka:latest` and `minio/minio:latest`.
 - Source is 3.10-compatible although `requires-python` says `>=3.12`, so the
   suite runs on whatever interpreter is to hand. Local Python is 3.10.
 
@@ -82,6 +85,14 @@ production path and `bootstrap.py` defaults to it; `JsonCodec` stays for local
 dev. `tests/test_codec_swap.py` runs the whole runner over both.
 
 **`run()` takes the function class, not an instance** — see bug 2 below.
+
+**The object store got the Kafka treatment.** The contract test's S3 is a fake
+of an interface the SDK owns, so the wire protocol had no real coverage until
+`tests/objectstore/` (MinIO in Docker, same manual-container pattern as the
+broker suite). It pins the two mappings that route production behaviour:
+real `NoSuchKey` → `ObjectMissingError` (dead-key re-fetch path), everything
+else → `TransientError`, plus the 256 KB claim check and the dead-key
+re-fetch over real bytes.
 
 ## Bugs found by testing, and fixed
 
@@ -130,8 +141,9 @@ topic has data.** See `proto/faas/v1/result.proto`.
 ### P0 — close before step 5
 
 - **CI.** Nothing runs automatically. Needs: unit suite on every push, `buf lint`
-  and `buf breaking` (neither has ever run — no buf binary locally), broker suite
-  on changes to `kafka.py`/`runner.py` or nightly.
+  and `buf breaking` (neither has ever run — no buf binary locally), broker
+  suite on changes to `kafka.py`/`runner.py`, object store suite on changes to
+  `objectstore.py`, or all three nightly.
 
 *The real rebalance test is done* — see the note at the top. Two consumers in a
 group, partitions moving, `_on_revoke` draining in-flight work under a live

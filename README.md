@@ -101,9 +101,10 @@ to build functions 2..N until step 4 is stable and calls the reference function
 the contract test, so it runs the real thing: real ffmpeg transcoding real
 audio, a real object-store round trip, real libsndfile decoding, the real
 protobuf wire format, and both runners with their real ledgers and DLQ routing.
-Only Kafka and S3 are fakes, and both are fakes of interfaces the SDK owns. The
-hydrator's output bytes are fed to the function verbatim, so any disagreement
-about the wire format surfaces there.
+Only Kafka and S3 are fakes, and both are fakes of interfaces the SDK owns —
+and both now have real-broker/real-store siblings in `tests/kafka/` and
+`tests/objectstore/`. The hydrator's output bytes are fed to the function
+verbatim, so any disagreement about the wire format surfaces there.
 
 A call goes in as an Audio API response and comes out as a `Result`, and the
 measurements match what went in — checked twice over: against a signal of
@@ -166,6 +167,23 @@ deployment target is AMQ Streams, which is Apache Kafka. The container is
 managed directly rather than through testcontainers, which raced its own start
 script here — doing it by hand also removes the chicken-and-egg on advertised
 listeners, since the host port is chosen before the broker boots.
+
+## Object store tests
+
+`tests/objectstore/` — 6 tests against a real MinIO server in Docker, excluded
+from the default run:
+
+```bash
+pytest -m minio
+```
+
+The contract test's S3 is a fake; this suite is the real one. Real boto3 over
+the real S3 wire protocol: put/get round trip with content type, a real
+`NoSuchKey` mapped to `ObjectMissingError` (which is what routes a dead key to
+the §5.4 re-fetch), the 256 KB claim check moving a payload to the store, a
+deleted object re-fetched from the Audio API exactly once — and the whole
+hydrator → MinIO → function pipeline with real ffmpeg and real libsndfile,
+measurements matching what went in.
 
 **Every assertion is paired with a negative control.** "The consumer was not
 evicted" passes trivially if the scenario never stressed the poll interval, so
