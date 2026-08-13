@@ -153,7 +153,7 @@ it is free now and a wire-breaking migration later.
 
 ## Broker tests
 
-`tests/kafka/` — 12 tests against a real Apache Kafka broker in KRaft mode,
+`tests/kafka/` — 13 tests against a real Apache Kafka broker in KRaft mode,
 excluded from the default run:
 
 ```bash
@@ -197,6 +197,14 @@ These found three things the fakes could not:
    CRC32. Only `murmur2`/`murmur2_random` are Java-Producer-compatible, and Java
    is the ecosystem this has to interop with. It now agrees on all 69 keys.
 
+**And the rebalance itself.** `test_rebalance.py` starts one consumer holding
+two partitions — one call on each finished and committed, one on each still in
+flight — then a second consumer joins the group. Cooperative-sticky moves a
+partition, `_on_revoke` drains under the live coordinator, and the test asserts
+the two properties that matter: the committed call is *not* redelivered, the
+uncommitted one *is* (to the new owner), and every call produces exactly one
+result — no loss, no duplicate.
+
 ## Deliberate deviations from the spec
 
 - **`process()` returns `FunctionResult`, not §5.1's `Result`.** §6's `Result` is
@@ -237,10 +245,6 @@ These found three things the fakes could not:
   is not something downstream can reasonably watch. Closing it means a
   hydration-failure topic the aggregator honours; that is a design decision, not
   something to invent here. See `ReferenceEmitter.emit_failure`.
-- **Rebalance behaviour is still unproven.** The broker suite covers eviction and
-  commits, but not a real cooperative-sticky rebalance: two consumers in a group,
-  partitions moving, `_on_revoke` draining in-flight work under a live
-  coordinator. That is the largest remaining gap.
 - **The input topic's schema is guessed.** §4.1 says "parse metadata, extract
   audio id" and defines no format. `JsonSourceDecoder` takes the field names as
   arguments for that reason — it will need pointing at whatever upstream

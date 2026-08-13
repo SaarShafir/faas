@@ -6,6 +6,12 @@ comes next.
 
 Last updated: 2026-08-13.
 
+The P0 rebalance gap is closed: `tests/kafka/test_rebalance.py` moves
+partitions between two consumers under a live coordinator with committed and
+uncommitted work in flight, and proves the §5.2 drain commits what finished,
+cancels what did not, and redelivers exactly the unfinished file to the new
+owner -- nothing lost, nothing duplicated.
+
 ---
 
 ## Where we are in the build order (§13)
@@ -28,12 +34,12 @@ wire format.
 
 ## Tests
 
-203 total. The unit suite runs in ~7s and is the default; the broker suite needs
+204 total. The unit suite runs in ~7s and is the default; the broker suite needs
 Docker and runs in ~4min.
 
 ```bash
 pytest                 # 191 unit tests
-pytest -m kafka        # 12 broker tests, needs Docker
+pytest -m kafka        # 13 broker tests, needs Docker
 ```
 
 | Area | Tests |
@@ -41,7 +47,7 @@ pytest -m kafka        # 12 broker tests, needs Docker
 | SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 95 |
 | Hydrator (flac, transcode, metadata, hydrator, pipeline) | 72 |
 | Reference function + contract | 24 |
-| Broker (poll interval, commits, partitioner) | 12 |
+| Broker (poll interval, commits, partitioner, cooperative rebalance) | 13 |
 
 ## Environment
 
@@ -123,12 +129,13 @@ topic has data.** See `proto/faas/v1/result.proto`.
 
 ### P0 — close before step 5
 
-- **A real rebalance test.** Two consumers in a group, partitions moving,
-  `_on_revoke` draining in-flight work under a live coordinator. The last part
-  of §5.2 still resting on fakes, and the spec's stated most-likely failure.
 - **CI.** Nothing runs automatically. Needs: unit suite on every push, `buf lint`
   and `buf breaking` (neither has ever run — no buf binary locally), broker suite
   on changes to `kafka.py`/`runner.py` or nightly.
+
+*The real rebalance test is done* — see the note at the top. Two consumers in a
+group, partitions moving, `_on_revoke` draining in-flight work under a live
+coordinator, with the committed/uncommitted split asserted on both sides.
 
 ### P1 — the next build-order step
 
