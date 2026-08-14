@@ -17,11 +17,18 @@ ENVELOPE_VERSION = 1
 
 
 class Status(enum.IntEnum):
-    """Spec §6 Result.Status."""
+    """Spec §6 Result.Status, with the zero value reserved.
 
-    SUCCESS = 0
-    FAILED = 1
-    SKIPPED = 2
+    §6 numbers SUCCESS = 0. It is 1 here and on the wire so that an unset field
+    -- proto3 gives enums no presence -- cannot decode as a success. Codecs
+    treat UNSPECIFIED as poison rather than defaulting it; nothing in the SDK
+    ever constructs it.
+    """
+
+    UNSPECIFIED = 0
+    SUCCESS = 1
+    FAILED = 2
+    SKIPPED = 3
 
 
 @dataclass(frozen=True)

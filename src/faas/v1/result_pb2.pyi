@@ -13,9 +13,11 @@ class Result(_message.Message):
     __slots__ = ("envelope_version", "call_id", "function_id", "function_version", "status", "error", "payload_schema_version", "payload_content_type", "payload", "payload_ref", "input_object_key", "input_offset", "attempt", "ingested_at", "started_at", "completed_at")
     class Status(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
+        STATUS_UNSPECIFIED: _ClassVar[Result.Status]
         SUCCESS: _ClassVar[Result.Status]
         FAILED: _ClassVar[Result.Status]
         SKIPPED: _ClassVar[Result.Status]
+    STATUS_UNSPECIFIED: Result.Status
     SUCCESS: Result.Status
     FAILED: Result.Status
     SKIPPED: Result.Status

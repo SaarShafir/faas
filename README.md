@@ -139,17 +139,19 @@ format, and §10 freezes them once published. Generated Python is committed to
 
 `buf generate` is the declared toolchain (§11); `scripts/gen_proto.py` uses it
 when the binary is present and falls back to protoc from `grpcio-tools`
-otherwise. Buf lint runs `DEFAULT` minus two enum rules, and breaking-change
-detection is `WIRE_JSON` — renames are allowed, wire changes are not.
+otherwise. Buf lint runs `DEFAULT` minus `ENUM_VALUE_PREFIX`, and
+breaking-change detection is `WIRE_JSON` — renames are allowed, wire changes are
+not.
 
-**One thing to decide before the topic has data on it.** §6 specifies
-`enum Status { SUCCESS = 0; ... }`, and that is what is implemented, so the wire
-format matches the document. But proto3 has no field presence for enums: an
-unset `status` decodes as `SUCCESS`. A partial write, a producer bug or a
-mis-built message therefore reads as "this call succeeded" — the wrong failure
-direction for the one field that gates whether downstream trusts a payload. The
-proto3 convention (`STATUS_UNSPECIFIED = 0`) exists for exactly this. Changing
-it is free now and a wire-breaking migration later.
+**The one deliberate deviation from §6: `SUCCESS` is 1, not 0.** proto3 has no
+field presence for enums, so with the spec's numbering an unset `status` decodes
+as `SUCCESS` — a partial write, a producer bug or a mis-built message reads as
+"this call succeeded", the wrong failure direction for the one field that gates
+whether downstream trusts a payload. The zero value is `STATUS_UNSPECIFIED` and
+the named states start at 1. Both codecs reject it in either direction: an
+unspecified or unrecognised status decodes to `DecodeError` (poison, straight to
+the DLQ) rather than a guess, and the SDK will not encode one. Done while the
+topic was empty; it is a wire-breaking migration now.
 
 ## Broker tests
 
@@ -227,9 +229,10 @@ These found three things the fakes could not:
   for the SDK — the runner only decodes references and only encodes results it
   built itself — but anything that proxies a message through must work on the
   protobuf object, not the dataclass.
-- **Buf lint and breaking-change detection are configured but unrun here.** No
-  `buf` binary in this environment; codegen went through the protoc fallback.
-  Both need to run in CI to be worth anything.
+- **Buf lint and breaking-change detection do not run automatically.** Both pass
+  locally against buf 1.72, and generated code now comes from `buf generate`
+  rather than the protoc fallback, but nothing enforces either on a push. They
+  need to run in CI to be worth anything.
 - **A call that fails hydration is invisible downstream.** No reference is
   published, so no function ever sees it and the aggregator (§7) never expects
   it. The DLQ holds the input for replay — the spec's answer — but nothing

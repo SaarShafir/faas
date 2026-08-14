@@ -67,6 +67,11 @@ class ProtobufCodec:
         return message.SerializeToString()
 
     def encode_result(self, result: Result) -> bytes:
+        if result.status is Status.UNSPECIFIED:
+            # The zero value exists to catch messages nobody meant to write.
+            # Writing one deliberately would defeat that.
+            raise ValueError("Result.status is UNSPECIFIED; the SDK never emits it")
+
         if result.payload is not None and result.payload_ref is not None:
             # payload_body is a oneof: setting both means one is silently
             # dropped on the wire. Fail here rather than downstream.
@@ -109,13 +114,24 @@ class ProtobufCodec:
         except Exception as exc:  # noqa: BLE001
             raise DecodeError(f"not a valid Result: {exc}") from exc
 
+        # Whether the payload can be trusted hangs on this field, so an absent
+        # or unrecognised status is poison rather than something to default.
+        # Unrecognised covers a newer producer's state: this decoder cannot know
+        # what it means, and guessing SUCCESS is the one wrong guess.
+        try:
+            status = Status(message.status)
+        except ValueError as exc:
+            raise DecodeError(f"Result has unrecognised status {message.status}") from exc
+        if status is Status.UNSPECIFIED:
+            raise DecodeError("Result has no status")
+
         which = message.WhichOneof("payload_body")
         return Result(
             envelope_version=message.envelope_version or ENVELOPE_VERSION,
             call_id=message.call_id,
             function_id=message.function_id,
             function_version=message.function_version,
-            status=Status(message.status),
+            status=status,
             error=(
                 ErrorInfo(
                     code=message.error.code,

@@ -66,6 +66,12 @@ class JsonCodec:
         ).encode()
 
     def encode_result(self, result: Result) -> bytes:
+        # JSON has real presence and would not need a reserved zero value, but
+        # both codecs sit behind one seam: a Result that fails to encode on the
+        # wire format must not encode here either.
+        if result.status is Status.UNSPECIFIED:
+            raise ValueError("Result.status is UNSPECIFIED; the SDK never emits it")
+
         return json.dumps(
             {
                 "envelope_version": result.envelope_version,
@@ -98,12 +104,20 @@ class JsonCodec:
     def decode_result(self, raw: bytes) -> Result:
         data = json.loads(raw)
         error = data.get("error")
+
+        try:
+            status = Status(data["status"])
+        except (KeyError, ValueError) as exc:
+            raise DecodeError(f"Result has no usable status: {exc}") from exc
+        if status is Status.UNSPECIFIED:
+            raise DecodeError("Result has no status")
+
         return Result(
             envelope_version=data["envelope_version"],
             call_id=data["call_id"],
             function_id=data["function_id"],
             function_version=data["function_version"],
-            status=Status(data["status"]),
+            status=status,
             error=(
                 None
                 if error is None

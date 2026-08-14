@@ -80,6 +80,25 @@ def test_a_malformed_body_is_poison_on_either_codec(
     assert consumer.commits == [[((consumer.topic, 0), 11)]]
 
 
+def test_neither_codec_will_emit_an_unspecified_status(codec):
+    """Only protobuf needs a reserved zero value, but a Result that is invalid
+    on the wire must be invalid on both sides of the seam -- otherwise local
+    dev on JSON produces envelopes that production would reject."""
+    from faas_sdk.models import Result
+
+    result = Result(
+        call_id="c10",
+        function_id="duration_rms",
+        function_version="1.0.0",
+        status=Status.UNSPECIFIED,
+        input_object_key="c10.flac",
+        input_offset=10,
+        attempt=1,
+    )
+    with pytest.raises(ValueError, match="UNSPECIFIED"):
+        codec.encode_result(result)
+
+
 def test_a_failure_emits_both_records_on_either_codec(
     swapped_runner, consumer, pool, producer, codec, config
 ):

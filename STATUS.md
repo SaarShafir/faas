@@ -4,7 +4,7 @@ Working notes against [`faas-spec.md`](faas-spec.md). [`README.md`](README.md)
 explains how the thing works; this is what is done, what was decided, and what
 comes next.
 
-Last updated: 2026-08-13.
+Last updated: 2026-08-14.
 
 ---
 
@@ -28,17 +28,17 @@ wire format.
 
 ## Tests
 
-203 total. The unit suite runs in ~7s and is the default; the broker suite needs
+209 total. The unit suite runs in ~7s and is the default; the broker suite needs
 Docker and runs in ~4min.
 
 ```bash
-pytest                 # 191 unit tests
+pytest                 # 197 unit tests
 pytest -m kafka        # 12 broker tests, needs Docker
 ```
 
 | Area | Tests |
 |---|---|
-| SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 95 |
+| SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 101 |
 | Hydrator (flac, transcode, metadata, hydrator, pipeline) | 72 |
 | Reference function + contract | 24 |
 | Broker (poll interval, commits, partitioner) | 12 |
@@ -52,6 +52,9 @@ Everything below is installed and working on this machine.
 - **ffmpeg 9.0** via winget (`Gyan.FFmpeg`). On PATH for new shells; older shells
   need a restart. Without it the transcode and contract tests skip rather than
   fail — but they are the ones worth having.
+- **buf 1.72** on PATH. `buf lint` and `buf breaking` both run; `scripts/gen_proto.py`
+  now takes the `buf generate` path, which is why the generated files carry
+  managed-mode options the earlier protoc fallback did not emit.
 - **Docker** required only for `pytest -m kafka`. Pulls `apache/kafka:latest`.
 - Source is 3.10-compatible although `requires-python` says `>=3.12`, so the
   suite runs on whatever interpreter is to hand. Local Python is 3.10.
@@ -76,6 +79,15 @@ production path and `bootstrap.py` defaults to it; `JsonCodec` stays for local
 dev. `tests/test_codec_swap.py` runs the whole runner over both.
 
 **`run()` takes the function class, not an instance** — see bug 2 below.
+
+**`Status.SUCCESS` is 1, deviating from §6's 0.** The one place the wire does
+not match the document, and deliberate: proto3 has no presence for enums, so
+with the spec's numbering an unset `status` decodes as `SUCCESS` and a partial
+write reads as "this call succeeded" — the wrong failure direction for the field
+gating whether downstream trusts a payload. `STATUS_UNSPECIFIED = 0` now holds
+the zero value, both codecs treat unspecified *and* unrecognised statuses as
+poison rather than guessing, and neither will encode one. Done 2026-08-14 while
+the topic was empty; it is a wire-breaking migration from here.
 
 ## Bugs found by testing, and fixed
 
@@ -111,24 +123,16 @@ dropping `-ar` from the transcoder fails 10.
 
 ## Next
 
-### Decide before anything else ships
-
-**The `Status` enum zero value.** §6 specifies `SUCCESS = 0`, which is what is
-implemented so the wire matches the document. But proto3 has no presence for
-enums: an unset `status` decodes as `SUCCESS`. A partial write or a producer bug
-therefore reads as "this call succeeded" — the wrong failure direction for the
-one field gating whether downstream trusts a payload. `STATUS_UNSPECIFIED = 0`
-exists for exactly this. **Free to change now, wire-breaking migration once the
-topic has data.** See `proto/faas/v1/result.proto`.
-
 ### P0 — close before step 5
 
 - **A real rebalance test.** Two consumers in a group, partitions moving,
   `_on_revoke` draining in-flight work under a live coordinator. The last part
   of §5.2 still resting on fakes, and the spec's stated most-likely failure.
 - **CI.** Nothing runs automatically. Needs: unit suite on every push, `buf lint`
-  and `buf breaking` (neither has ever run — no buf binary locally), broker suite
-  on changes to `kafka.py`/`runner.py` or nightly.
+  and `buf breaking`, broker suite on changes to `kafka.py`/`runner.py` or
+  nightly. Both buf checks now run clean locally against buf 1.72 (`buf breaking`
+  flags the enum renumbering above against `master`, as it should — that is the
+  one intended break).
 
 ### P1 — the next build-order step
 

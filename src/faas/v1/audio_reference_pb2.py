@@ -25,13 +25,14 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1d\x66\x61\x61s/v1/audio_reference.proto\x12\x07\x66\x61\x61s.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8b\x02\n\x0e\x41udioReference\x12\x18\n\x10\x65nvelope_version\x18\x01 \x01(\x05\x12\x0f\n\x07\x63\x61ll_id\x18\x02 \x01(\t\x12\x12\n\nobject_key\x18\x03 \x01(\t\x12\x13\n\x0bsample_rate\x18\x04 \x01(\x05\x12\x10\n\x08\x63hannels\x18\x05 \x01(\x05\x12\x18\n\x10\x64uration_seconds\x18\x06 \x01(\x01\x12/\n\x0bingested_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12/\n\x0bhydrated_at\x18\x08 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x17\n\x0fsource_metadata\x18\t \x01(\x0c\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1d\x66\x61\x61s/v1/audio_reference.proto\x12\x07\x66\x61\x61s.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfe\x02\n\x0e\x41udioReference\x12)\n\x10\x65nvelope_version\x18\x01 \x01(\x05R\x0f\x65nvelopeVersion\x12\x17\n\x07\x63\x61ll_id\x18\x02 \x01(\tR\x06\x63\x61llId\x12\x1d\n\nobject_key\x18\x03 \x01(\tR\tobjectKey\x12\x1f\n\x0bsample_rate\x18\x04 \x01(\x05R\nsampleRate\x12\x1a\n\x08\x63hannels\x18\x05 \x01(\x05R\x08\x63hannels\x12)\n\x10\x64uration_seconds\x18\x06 \x01(\x01R\x0f\x64urationSeconds\x12;\n\x0bingested_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\ningestedAt\x12;\n\x0bhydrated_at\x18\x08 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\nhydratedAt\x12\'\n\x0fsource_metadata\x18\t \x01(\x0cR\x0esourceMetadataB_\n\x0b\x63om.faas.v1B\x13\x41udioReferenceProtoP\x01\xa2\x02\x03\x46XX\xaa\x02\x07\x46\x61\x61s.V1\xca\x02\x07\x46\x61\x61s\\V1\xe2\x02\x13\x46\x61\x61s\\V1\\GPBMetadata\xea\x02\x08\x46\x61\x61s::V1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'faas.v1.audio_reference_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'\n\013com.faas.v1B\023AudioReferenceProtoP\001\242\002\003FXX\252\002\007Faas.V1\312\002\007Faas\\V1\342\002\023Faas\\V1\\GPBMetadata\352\002\010Faas::V1'
   _globals['_AUDIOREFERENCE']._serialized_start=76
-  _globals['_AUDIOREFERENCE']._serialized_end=343
+  _globals['_AUDIOREFERENCE']._serialized_end=458
 # @@protoc_insertion_point(module_scope)

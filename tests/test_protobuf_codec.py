@@ -160,6 +160,54 @@ def test_skipped_result_round_trips(codec):
     assert decoded.status is Status.SKIPPED
 
 
+# -- the reserved zero value -----------------------------------------------
+#
+# proto3 gives enums no presence, so whatever sits at 0 is what an unset,
+# truncated or half-written status decodes as. These tests are the reason
+# SUCCESS is 1 and not §6's 0.
+
+
+def test_a_result_with_no_status_does_not_decode_as_a_success(codec):
+    """The failure this whole change exists to prevent: a producer that never
+    sets `status` must not have its payload trusted downstream."""
+    from faas.v1 import result_pb2
+
+    message = result_pb2.Result(call_id="call-1", function_id="duration_rms")
+    assert not message.status  # unset, i.e. the zero value
+
+    with pytest.raises(DecodeError, match="status"):
+        codec.decode_result(message.SerializeToString())
+
+
+def test_a_status_this_build_does_not_know_is_poison(codec):
+    """proto3 enums are open: a newer producer's state arrives as a bare int.
+    Reading it as anything -- least of all SUCCESS -- would be a guess."""
+    from faas.v1 import result_pb2
+
+    message = result_pb2.Result(call_id="call-1")
+    message.status = 99
+
+    with pytest.raises(DecodeError, match="99"):
+        codec.decode_result(message.SerializeToString())
+
+
+def test_the_sdk_refuses_to_emit_an_unspecified_status(codec):
+    """The zero value is a tripwire for messages nobody meant to write.
+    Deliberately writing one would disarm it."""
+    with pytest.raises(ValueError, match="UNSPECIFIED"):
+        codec.encode_result(_result(status=Status.UNSPECIFIED))
+
+
+def test_no_named_state_sits_at_the_zero_value():
+    """Pins the deviation from §6 itself, so restoring SUCCESS = 0 fails here
+    rather than quietly on a topic."""
+    from faas.v1 import result_pb2
+
+    assert Status.UNSPECIFIED == 0
+    assert result_pb2.Result.Status.STATUS_UNSPECIFIED == 0
+    assert Status.SUCCESS != 0
+
+
 def test_large_offsets_survive(codec):
     """input_offset is int64 in the schema; a 48h topic will exceed int32."""
     big = 2**40
@@ -174,6 +222,7 @@ def test_status_numbering_matches_the_python_enum():
     contract expressed twice, and a mismatch silently relabels every result."""
     from faas.v1 import result_pb2
 
+    assert result_pb2.Result.Status.STATUS_UNSPECIFIED == Status.UNSPECIFIED
     assert result_pb2.Result.Status.SUCCESS == Status.SUCCESS
     assert result_pb2.Result.Status.FAILED == Status.FAILED
     assert result_pb2.Result.Status.SKIPPED == Status.SKIPPED
