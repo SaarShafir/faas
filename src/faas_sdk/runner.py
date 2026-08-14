@@ -35,6 +35,7 @@ from .events import (
     RETRY_SCHEDULED,
     NullEvents,
 )
+from .health import HealthState
 from .metrics import (
     DLQ,
     FILE_LATENCY,
@@ -73,6 +74,7 @@ class FunctionRunner:
         decoder=None,
         metrics=None,
         events=None,
+        health=None,
         clock=None,
     ):
         self.config = config
@@ -92,6 +94,9 @@ class FunctionRunner:
         # cannot be a metric label without destroying the metric store, and an
         # aggregate cannot be reconstructed reliably from a lossy log pipeline.
         self.events = events or NullEvents()
+        # Probes read this. Always present, so the runner never branches on
+        # whether health is configured -- only the HTTP server is optional.
+        self.health = health or HealthState()
         self.clock = clock or SystemClock()
 
         self.ledger = OffsetLedger()
@@ -131,6 +136,10 @@ class FunctionRunner:
             self.close()
 
     def stop(self) -> None:
+        # Readiness fails at once so nothing new is routed here, while liveness
+        # stays true -- a drain cut short by a restart is the thing SIGTERM
+        # handling exists to avoid.
+        self.health.stopping()
         self._running = False
 
     def close(self) -> None:
@@ -146,6 +155,10 @@ class FunctionRunner:
     # -- one iteration -----------------------------------------------------
 
     def run_once(self) -> None:
+        # First thing in the loop, so liveness reflects the loop turning rather
+        # than the loop finishing: a poll that blocks in the middle of an
+        # iteration should still look alive until it is genuinely stale.
+        self.health.loop_ran()
         self._drain_completions()
         self._enforce_deadlines()
         self._submit_deferred()
@@ -159,6 +172,11 @@ class FunctionRunner:
         self._commit()
         self.metrics.gauge(IN_FLIGHT, self.in_flight, **self._labels)
         self._report_evictions()
+        # Refreshed every iteration rather than only in the rebalance
+        # callbacks: librdkafka assigns asynchronously after subscribe, so
+        # readiness that waited for a callback would report a working pod as
+        # unready for however long that took. `assignment()` is a local call.
+        self._note_assignment()
 
     @property
     def in_flight(self) -> int:
@@ -473,7 +491,23 @@ class FunctionRunner:
         # Cooperative-sticky: an incremental assign may arrive while other
         # partitions keep working, so nothing here may disturb existing state.
         self._paused = False
-        log.info("assigned %s", partitions)
+        self._note_assignment()
+        # A count and a range, not the list. On a 200-partition topic across
+        # eleven consumer groups the full list is thousands of lines per
+        # rebalance -- unreadable, and not free to produce either.
+        log.info("assigned %s", _describe(partitions))
+
+    def _note_assignment(self) -> None:
+        """Tell the probes how many partitions this pod holds.
+
+        Readiness is a routing signal: a pod holding none is mid-rebalance and
+        should take no traffic, but it is not unhealthy and must not be
+        restarted for it.
+        """
+        try:
+            self.health.assigned(len(self.consumer.assignment()))
+        except Exception as exc:  # noqa: BLE001 - a fake consumer, or a broker blip
+            log.debug("could not read the assignment: %s", exc)
 
     def _on_revoke(self, partitions) -> None:
         """Give outstanding work a bounded chance to finish, commit what did,
@@ -498,6 +532,9 @@ class FunctionRunner:
             entry for entry in self._retry_queue if _tp(entry[1].message.tp) not in revoked
         ]
         self.ledger.revoke(revoked)
+        # Holding no partitions after a revoke is normal and temporary, but it
+        # does mean this pod should take no traffic until the next assignment.
+        self._note_assignment()
         self._paused = False
 
 
@@ -508,6 +545,24 @@ def _call_id_from_key(key):
         return key.decode()
     except UnicodeDecodeError:
         return ""
+
+
+def _describe(partitions) -> str:
+    """A readable summary of a partition list.
+
+    `faas.audio.internal[0-199] (200)` rather than two hundred repr'd objects.
+    """
+    if not partitions:
+        return "nothing"
+    by_topic: dict[str, list[int]] = {}
+    for partition in partitions:
+        by_topic.setdefault(partition.topic, []).append(partition.partition)
+    parts = []
+    for topic, numbers in sorted(by_topic.items()):
+        numbers.sort()
+        span = f"{numbers[0]}-{numbers[-1]}" if len(numbers) > 1 else str(numbers[0])
+        parts.append(f"{topic}[{span}] ({len(numbers)})")
+    return ", ".join(parts)
 
 
 def _tp(value):

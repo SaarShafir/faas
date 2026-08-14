@@ -1,0 +1,137 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name }}
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: faas-declarations
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+  annotations:
+    # Mounted rather than baked into the image so the console can render what
+    # is actually deployed, and so a tuning change is a values regenerate
+    # rather than a rebuild. It stays generated from git either way -- §8's
+    # single source of truth is the declaration in the repo.
+    faas.io/generated-from: functions/*/function.yaml
+data:
+  {{- range $function := .Values.functions }}
+  {{ $function.id }}.yaml: |
+    function_id: {{ $function.id }}
+    function_version: {{ $function.version | quote }}
+    image: {{ $function.image }}
+    in_flight: {{ $function.inFlight }}
+    per_file_timeout_seconds: {{ $function.perFileTimeoutSeconds }}
+    retry_budget: {{ $function.retryBudget }}
+    dlq_topic: {{ $function.dlqTopic }}
+    {{- with $function.inputTopic }}
+    input_topic: {{ . }}
+    {{- end }}
+    {{- with $function.resultsTopic }}
+    results_topic: {{ . }}
+    {{- end }}
+    results_topic_partitions: {{ $function.resultsTopicPartitions }}
+  {{- end }}
+{{- if .Values.monitoring.serviceMonitor }}
+{{- range $function := .Values.functions }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: faas-{{ $function.name }}
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      faas.function: {{ $function.id }}
+  endpoints:
+    - port: metrics
+      interval: {{ $.Values.monitoring.interval }}
+{{- end }}
+{{- end }}
+{{- if .Values.monitoring.prometheusRule }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: faas-lag
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+spec:
+  groups:
+    - name: faas-lag
+      rules:
+        # §12 states its thresholds in hours; kafka-exporter reports lag in
+        # messages. This is the conversion, and clamp_min is load-bearing: the
+        # exporter uses -1 for a partition the group has never committed on,
+        # which is "unknown" rather than a measurement, and an unclamped sum
+        # over a 200-partition topic goes negative -- so every rule below would
+        # sit silently at zero for ever.
+        - record: faas:consumergroup_lag_seconds
+          expr: |
+            sum by (consumergroup) (clamp_min(kafka_consumergroup_lag, 0))
+            /
+            sum by (consumergroup) (rate(kafka_consumergroup_current_offset[5m]))
+        - alert: FaasLagOverOneHour
+          expr: faas:consumergroup_lag_seconds > 3600
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ `{{ $labels.consumergroup }}` }} is more than 1h behind"
+            description: >-
+              §12's alert threshold. The 24h object TTL is what makes this a
+              remediation window rather than a cliff.
+        - alert: FaasLagOverThreeHours
+          expr: faas:consumergroup_lag_seconds > 10800
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ `{{ $labels.consumergroup }}` }} is more than 3h behind -- page"
+        - alert: FaasConsumerStalled
+          expr: |
+            sum by (consumergroup) (clamp_min(kafka_consumergroup_lag, 0)) > 0
+            and
+            sum by (consumergroup) (rate(kafka_consumergroup_current_offset[5m])) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ `{{ $labels.consumergroup }}` }} has lag but is not consuming"
+        - alert: FaasRunnerEvicted
+          # The §5.2 failure in the act: the poll loop blocked past
+          # max.poll.interval.ms and in-flight work is being reprocessed.
+          expr: increase(faas_max_poll_exceeded_total[15m]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ `{{ $labels.function_id }}` }} exceeded max.poll.interval.ms"
+{{- end }}
+{{- if .Values.topics.create }}
+{{- range $topic := .Values.topics.list }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ $topic.name }}
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+    strimzi.io/cluster: {{ $.Values.topics.cluster }}
+spec:
+  topicName: {{ $topic.name }}
+  # Partition counts are load-bearing, not decoration: the SDK computes each
+  # result's partition itself with murmur2 over call_id and passes it
+  # explicitly, so a topic with fewer partitions than the declaration's
+  # results_topic_partitions fails when the first result is produced -- at run
+  # time, not at startup.
+  partitions: {{ $topic.partitions }}
+  replicas: {{ $topic.replicas | default $.Values.topics.replicas }}
+  config:
+    retention.ms: {{ $topic.retentionMs | default 172800000 }}
+{{- end }}
+{{- end }}

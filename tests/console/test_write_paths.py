@@ -271,3 +271,99 @@ def test_the_realtime_multiple_is_reported_against_the_floor():
     assert fast.realtime_multiple == 300
     assert slow.realtime_multiple == 10
     assert sandbox.RunResult(ok=True).realtime_multiple is None
+
+
+# -- pausing on OpenShift --------------------------------------------------
+
+
+def test_pause_scales_the_deployment_and_remembers_the_replica_count(monkeypatch, tmp_path):
+    """OpenShift has no Docker socket, so pause scales the Deployment instead.
+
+    The replica count goes into an annotation in the same patch that sets it to
+    zero, so a console restart between pause and resume cannot strand a
+    function at zero replicas.
+    """
+    monkeypatch.setattr(actions, "ALLOW_WRITES", True)
+    monkeypatch.setattr(actions, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(actions, "K8S_NAMESPACE", "faas")
+
+    calls = []
+
+    def fake_k8s(method, path, body=None, content_type=""):
+        calls.append((method, path, body))
+        if method == "GET":
+            return {"metadata": {"annotations": {}}, "spec": {"replicas": 3}}
+        return {}
+
+    monkeypatch.setattr(actions, "_k8s", fake_k8s)
+
+    result = actions.pause_function("spectral_centroid")
+
+    assert result.ok
+    assert "was 3 replica" in result.message
+    method, path, body = calls[-1]
+    assert method == "PATCH"
+    assert path.endswith("/namespaces/faas/deployments/faas-spectral-centroid")
+    assert body["spec"]["replicas"] == 0
+    assert body["metadata"]["annotations"][actions.PAUSED_FROM] == "3"
+
+
+def test_resume_restores_the_remembered_count(monkeypatch, tmp_path):
+    """Resuming to 1 when it was 3 would quietly cut a function's capacity to a
+    third, and nothing would report it."""
+    monkeypatch.setattr(actions, "ALLOW_WRITES", True)
+    monkeypatch.setattr(actions, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(actions, "K8S_NAMESPACE", "faas")
+
+    patched = {}
+
+    def fake_k8s(method, path, body=None, content_type=""):
+        if method == "GET":
+            return {
+                "metadata": {"annotations": {actions.PAUSED_FROM: "3"}},
+                "spec": {"replicas": 0},
+            }
+        patched.update(body)
+        return {}
+
+    monkeypatch.setattr(actions, "_k8s", fake_k8s)
+
+    result = actions.pause_function("spectral_centroid", resume=True)
+
+    assert result.ok
+    assert patched["spec"]["replicas"] == 3
+    # Cleared, so a later pause records the count it finds rather than a stale one.
+    assert patched["metadata"]["annotations"][actions.PAUSED_FROM] is None
+
+
+def test_pausing_an_already_paused_function_is_refused(monkeypatch, tmp_path):
+    """Otherwise the annotation would be overwritten with 0 and resume would
+    restore nothing."""
+    monkeypatch.setattr(actions, "ALLOW_WRITES", True)
+    monkeypatch.setattr(actions, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(actions, "K8S_NAMESPACE", "faas")
+    monkeypatch.setattr(
+        actions,
+        "_k8s",
+        lambda *a, **k: {"metadata": {"annotations": {}}, "spec": {"replicas": 0}},
+    )
+
+    result = actions.pause_function("spectral_centroid")
+
+    assert not result.ok
+    assert "already paused" in result.message
+
+
+def test_the_docker_path_is_used_when_there_is_no_namespace(monkeypatch, tmp_path):
+    """One console image, two environments: compose stops a container, a
+    cluster scales a Deployment, and the chart is what says which."""
+    monkeypatch.setattr(actions, "ALLOW_WRITES", True)
+    monkeypatch.setattr(actions, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(actions, "K8S_NAMESPACE", "")
+
+    seen = []
+    monkeypatch.setattr(actions, "_docker", lambda *a, **k: seen.append(a) or [])
+
+    actions.pause_function("spectral_centroid")
+
+    assert seen, "should have gone to Docker"

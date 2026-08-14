@@ -17,6 +17,8 @@ from faas_sdk.clock import SystemClock
 from faas_sdk.config import FunctionConfig
 from faas_sdk.dlq import DeadLetterQueue
 from faas_sdk.events import from_env as events_from_env
+from faas_sdk.health import HealthState
+from faas_sdk.health import serve as serve_health
 from faas_sdk.metrics import from_env as metrics_from_env
 from faas_sdk.pool import InlineWorkerPool
 from faas_sdk.runner import FunctionRunner
@@ -43,6 +45,7 @@ def build_runner(
     codec=None,
     metrics=None,
     events=None,
+    health=None,
     clock=None,
     bootstrap_servers=None,
 ) -> FunctionRunner:
@@ -58,6 +61,17 @@ def build_runner(
         }
     )
     events = events or events_from_env(config.function_id, config.function_version)
+    # Probes, so the platform can tell a working pod from a stuck one. The
+    # state object is always built; only the HTTP server is optional, and it is
+    # started by `run()` rather than here so building a runner in a test opens
+    # no sockets.
+    health = health or HealthState(
+        # Liveness must not fire before the broker's own eviction would: the
+        # poll interval is per_file_timeout x in_flight + 60s, and a probe that
+        # kills pods the coordinator still trusts turns slow work into
+        # reprocessed work -- the §5.2 failure by another route.
+        stale_after=max(300.0, config.per_file_timeout_seconds * config.in_flight + 120.0)
+    )
     bootstrap_servers = bootstrap_servers or os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "")
 
     if codec is None:
@@ -136,6 +150,7 @@ def build_runner(
         dlq=DeadLetterQueue(config=config, producer=producer, clock=clock),
         metrics=metrics,
         events=events,
+        health=health,
         clock=clock,
     )
 
@@ -151,6 +166,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
+    serve_health(runner.health)
     log.info("hydrating %s -> %s", runner.config.input_topic, runner.config.results_topic)
     runner.run()
 

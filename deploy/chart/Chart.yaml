@@ -1,0 +1,9 @@
+apiVersion: v2
+name: faas
+description: >-
+  Audio function-as-a-service (faas-spec.md) for OpenShift. One Deployment per
+  function, generated from the declarations in functions/ rather than written by
+  hand -- see values.yaml, which scripts/generate_values.py produces.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -40,6 +40,17 @@ ALLOW_WRITES = os.environ.get("FAAS_CONSOLE_ALLOW_WRITES", "").strip().lower() i
 AUDIT_PATH = Path(os.environ.get("FAAS_CONSOLE_AUDIT_LOG", "/runs/console-audit.jsonl"))
 REPO_DIR = Path(os.environ.get("FAAS_REPO_DIR", "/repo"))
 COMPOSE_PROJECT = os.environ.get("FAAS_COMPOSE_PROJECT", "faas-local")
+
+# Set by the chart. Its presence is what says "this is a cluster, scale the
+# Deployment" rather than "this is compose, stop the container".
+K8S_NAMESPACE = os.environ.get("FAAS_K8S_NAMESPACE", "")
+K8S_API = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+K8S_PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+# Where a paused function's previous replica count is kept, so resume restores
+# what was there rather than guessing 1. An annotation rather than memory
+# because a console restart in between must not strand a function at zero.
+PAUSED_FROM = "faas.io/paused-from"
 DOCKER_SOCKET = os.environ.get("FAAS_DOCKER_SOCKET", "/var/run/docker.sock")
 
 
@@ -111,6 +122,99 @@ def _docker(method: str, path: str):
         return json.loads(body) if body.strip().startswith(b"[") else None
     finally:
         connection.close()
+
+
+def _k8s(method: str, path: str, body: dict | None = None, content_type: str = ""):
+    """One request to the API server with the pod's ServiceAccount token."""
+    import http.client
+    import ssl
+
+    with open(f"{SA_DIR}/token", encoding="utf-8") as handle:
+        token = handle.read().strip()
+
+    context = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+    connection = http.client.HTTPSConnection(K8S_API, int(K8S_PORT), context=context, timeout=30)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    payload = None
+    if body is not None:
+        payload = json.dumps(body).encode()
+        headers["Content-Type"] = content_type or "application/merge-patch+json"
+
+    try:
+        connection.request(method, path, body=payload, headers=headers)
+        response = connection.getresponse()
+        raw = response.read()
+        if response.status >= 400:
+            detail = raw[:300].decode(errors="replace")
+            raise OSError(f"api server returned {response.status}: {detail}")
+        return json.loads(raw) if raw.strip() else None
+    finally:
+        connection.close()
+
+
+def _scale_deployment(function_id: str, *, resume: bool) -> ActionResult:
+    """Pause or resume by scaling this function's Deployment.
+
+    Pausing records the current replica count in an annotation and sets
+    replicas to zero in the same merge-patch, so the two cannot get out of step
+    and a console restart between pause and resume loses nothing.
+    """
+    name = f"faas-{function_id.replace('_', '-')}"
+    path = f"/apis/apps/v1/namespaces/{K8S_NAMESPACE}/deployments/{name}"
+
+    try:
+        deployment = _k8s("GET", path)
+    except OSError as exc:
+        return ActionResult(False, f"could not read {name}", detail=str(exc))
+    except FileNotFoundError:
+        return ActionResult(
+            False,
+            "no ServiceAccount token",
+            detail=(
+                f"{SA_DIR}/token is missing, so this is not running in a pod. "
+                "Unset FAAS_K8S_NAMESPACE to use the Docker path instead."
+            ),
+        )
+
+    annotations = (deployment.get("metadata") or {}).get("annotations") or {}
+    current = (deployment.get("spec") or {}).get("replicas", 1)
+
+    if resume:
+        # Restore what it was, not a guess. If the annotation is missing --
+        # paused by something other than the console -- one replica is the
+        # least surprising fallback, and the chart's value takes over on the
+        # next upgrade anyway.
+        target = int(annotations.get(PAUSED_FROM) or 1) or 1
+        patch = {"metadata": {"annotations": {PAUSED_FROM: None}}, "spec": {"replicas": target}}
+    else:
+        if current == 0:
+            return ActionResult(False, f"{name} is already paused")
+        target = 0
+        patch = {
+            "metadata": {"annotations": {PAUSED_FROM: str(current)}},
+            "spec": {"replicas": 0},
+        }
+
+    try:
+        _k8s("PATCH", path, patch)
+    except OSError as exc:
+        return ActionResult(False, f"could not scale {name}", detail=str(exc))
+
+    if resume:
+        return ActionResult(
+            True,
+            f"resumed {function_id} to {target} replica(s)",
+            detail="It will rejoin its group and work through the backlog.",
+        )
+    return ActionResult(
+        True,
+        f"paused {function_id} (was {current} replica(s))",
+        detail=(
+            "Its lag will grow while every other function is unaffected -- the "
+            "isolation guarantee working as intended. Resume restores the same "
+            "replica count."
+        ),
+    )
 
 
 def _guard(action: str, **fields) -> None:
@@ -229,17 +333,20 @@ def pause_function(function_id: str, *, resume: bool = False) -> ActionResult:
     inside a container that only has the daemon package, and a stopped
     container is one HTTP POST anyway.
 
-    On OpenShift the equivalent is `oc scale --replicas=0`, and the honest
-    version of this feature there is a control that talks to the API server with
-    a service account scoped to one namespace. Doing it properly is its own
-    piece of work; this is the local approximation, labelled as such.
+    On OpenShift there is no Docker socket, so pausing scales the Deployment to
+    zero through the API server instead, using the pod's own ServiceAccount
+    token and a Role that permits nothing else in one namespace. Which path is
+    taken is decided by `FAAS_K8S_NAMESPACE`, set by the chart.
 
-    Pausing is safe for the platform: the group's offsets stay committed, its
-    lag grows, and no other function is affected -- which is the isolation
-    guarantee doing exactly what it exists for.
+    Pausing is safe for the platform either way: the group's offsets stay
+    committed, its lag grows, and no other function is affected -- which is the
+    isolation guarantee doing exactly what it exists for.
     """
     action = "resume" if resume else "pause"
-    _guard(action, function_id=function_id)
+    _guard(action, function_id=function_id, target=K8S_NAMESPACE or COMPOSE_PROJECT)
+
+    if K8S_NAMESPACE:
+        return _scale_deployment(function_id, resume=resume)
 
     service = function_id.replace("_", "-")
     try:

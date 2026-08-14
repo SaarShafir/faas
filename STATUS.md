@@ -18,6 +18,7 @@ Last updated: 2026-08-14.
 | 4 | One trivial reference function, end to end | **done** |
 | — | Ten functions on a local stack that mimics production | **done** |
 | — | Metrics, dashboards and a read-only console | **done** |
+| — | Helm chart and images for OpenShift | **done** |
 | 5 | Results sink service | not started |
 | 6 | Autoscaling on lag | not started |
 | 7 | Aggregator + `call_complete` | not started |
@@ -129,9 +130,6 @@ function SIGKILLed and a hydrator SIGTERMed mid-flight.
   `(ref, audio)`, and the attempt lives on the §6 envelope. So a function cannot
   say "this is my last attempt, return something degraded rather than nothing".
   `flaky_analyzer` needed a marker file on disk to fail once and then succeed.
-- **The `assigned` log line prints every partition.** At 200 partitions across
-  eleven consumer groups that is thousands of lines per rebalance, which is both
-  unreadable and not free. It should log a count and a range.
 - **A dead producer loses queued records.** The crash above logged
   `Producer terminating with 1 message still in queue`. Whatever the crash, the
   shutdown path should flush.
@@ -207,6 +205,27 @@ pause or backfill (write paths need authentication and an audit trail first).
 Also emitted for the first time: `faas.max_poll_exceeded`. `ConfluentConsumer`
 has always counted evictions and `kafka.py` said the number "belongs on a
 dashboard next to consumer lag"; nothing carried it out of the process.
+
+## Deploying (deploy/)
+
+A Helm chart whose per-function values are **generated** from the declarations
+by `scripts/generate_values.py`, and one image per function built by
+`scripts/build_images.py` from the tags the declarations name. Neither is
+tidiness: §8's "one PR, zero infra tickets" ends at the first hand-written
+Deployment or hand-typed image tag. See [`deploy/README.md`](deploy/README.md).
+
+Three things the SDK gained for it:
+
+- **Readiness and liveness** (`health.py`). Liveness asks whether the poll loop
+  is turning; readiness asks whether the pod holds partitions. Conflating them
+  restarts a pod that is legitimately grinding through a 5-minute file, which
+  turns one slow call into a redelivered one.
+- **A per-function termination grace period**, derived from the declaration's
+  own timeout and drain budget. OpenShift's 30s default would SIGKILL the
+  hydrator mid-file on every rollout.
+- **The `assigned` log line is a summary now** — `faas.audio.internal[0-199]
+  (200)` instead of two hundred repr'd objects per rebalance, which was
+  recorded as a known annoyance and is fixed.
 
 ## Decisions worth knowing about
 

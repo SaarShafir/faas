@@ -1,0 +1,88 @@
+# Everything the cluster provides, and nothing about the functions themselves.
+#
+# The per-function values live in values-functions.yaml, which is generated from
+# the declarations in git by scripts/generate_values.py. Install with both:
+#
+#   helm install faas deploy/chart \
+#     -f deploy/chart/values-functions.yaml \
+#     -f my-cluster.yaml
+#
+# That split is deliberate: this file is a cluster's business and changes per
+# environment, while the generated one is a fact about the repo and must never
+# be edited by hand.
+
+# The declarations name `registry/faas-duration-rms:1.0.0`, where `registry` is
+# a placeholder. Set this to the real one; the name and tag are kept.
+registry: ""
+imagePullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+
+serviceAccount:
+  name: faas
+
+kafka:
+  bootstrapServers: kafka-kafka-bootstrap:9092
+  # SASL/TLS credentials, if the cluster needs them. Mounted with envFrom, so
+  # whatever librdkafka settings the SDK reads from the environment apply.
+  secretName: ""
+
+objectStore:
+  bucket: faas-audio
+  # Empty for real AWS. Set for MinIO, ODF or anything else that is not AWS --
+  # and set addressingStyle to path with it, since a non-AWS endpoint has no
+  # per-bucket DNS.
+  endpoint: ""
+  addressingStyle: path
+  region: us-east-1
+  # Must contain AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Not created by
+  # this chart: credentials belong to whoever owns the cluster, not to a chart
+  # in an application repo.
+  secretName: faas-object-store
+
+audioApi:
+  # §4.1's source of audio. Only the hydrator uses it.
+  url: http://audio-api:8080
+
+events:
+  # Per-call events over OTLP. The collector decides where they land, which is
+  # what makes the backend swappable without touching an image.
+  enabled: true
+  endpoint: http://otel-collector:4318
+
+monitoring:
+  # ServiceMonitor and PrometheusRule assume the Prometheus Operator, which
+  # OpenShift user-workload monitoring provides. Turn both off if metrics are
+  # scraped some other way.
+  serviceMonitor: true
+  prometheusRule: true
+  interval: 15s
+
+topics:
+  # Strimzi KafkaTopic resources, so topics are reviewed like code. Leave off
+  # for an external Kafka where topics are somebody else's to create -- but the
+  # partition counts still have to match the declarations, or producing a
+  # result fails at run time. `generate_values.py` prints the required counts.
+  create: false
+  cluster: kafka
+  replicas: 3
+  list: []
+
+console:
+  enabled: true
+  image: registry/faas-console:1.0.0
+  eventsUrl: http://opensearch:9200
+  eventsIndex: ss4o_logs-faas-local
+  grafanaUrl: ""
+  # Replay, pause and committing edits. There is no authentication in the
+  # console, so this is a decision about who can reach the Route.
+  allowWrites: false
+  # Executes arbitrary Python against corpus audio. Needs a writable root
+  # filesystem, so enabling it relaxes one hardening setting.
+  sandbox: false
+  serviceAccount:
+    name: faas-console
+  route:
+    enabled: true
+    host: ""

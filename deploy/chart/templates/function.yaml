@@ -1,0 +1,226 @@
+{{/*
+One Deployment, Service and PDB per function, from values that were generated
+from the declarations. Nothing here is per-function by hand -- that is the whole
+point. Adding a function is a directory in functions/, a regenerate, and a PR.
+*/}}
+{{- range $function := .Values.functions }}
+{{- $isHydrator := eq $function.id "hydrator" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: faas-{{ $function.name }}
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ if $isHydrator }}hydrator{{ else }}function{{ end }}
+    faas.function: {{ $function.id }}
+    faas.version: {{ $function.version | quote }}
+spec:
+  # Fixed for now; §5.5's autoscaler (build-order step 6) scales this on lag.
+  # §5.2 is explicit that the pod count is the thing to scale and in_flight
+  # stays shallow, so this is the number that will move, not in_flight.
+  replicas: {{ $function.replicas | default 1 }}
+  selector:
+    matchLabels:
+      faas.function: {{ $function.id }}
+  strategy:
+    rollingUpdate:
+      # One at a time, and never below the current count. A consumer group
+      # rebalances on every membership change, so a rollout that replaced
+      # several pods at once would cause several rebalances and redeliver
+      # whatever was in flight for each.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "faas.labels" $ | nindent 8 }}
+        faas.function: {{ $function.id }}
+        faas.version: {{ $function.version | quote }}
+      annotations:
+        # Restarts the pods when the declaration changes, since the declaration
+        # is mounted rather than baked in.
+        faas.io/declaration-checksum: {{ $function | toYaml | sha256sum | trunc 16 }}
+    spec:
+      serviceAccountName: {{ $.Values.serviceAccount.name }}
+      terminationGracePeriodSeconds: {{ include "faas.terminationGrace" (dict "function" $function) }}
+      securityContext:
+        # OpenShift assigns a random UID in group 0, so the image makes
+        # everything it owns group-writable. fsGroup carries that to any volume
+        # -- without it a mounted volume is root-owned at 755 and the process
+        # cannot write to it, which is exactly how corpus generation failed in
+        # the local stack.
+        fsGroup: 0
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        podAntiAffinity:
+          # Spread, but do not refuse to schedule: a single-node dev cluster
+          # must still be able to run this.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    faas.function: {{ $function.id }}
+      containers:
+        - name: {{ $function.name }}
+          image: {{ include "faas.image" (dict "function" $function "root" $) }}
+          imagePullPolicy: {{ $.Values.imagePullPolicy }}
+          ports:
+            - name: health
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9108
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ $.Values.kafka.bootstrapServers | quote }}
+            - name: FAAS_METRICS
+              value: prometheus
+            - name: FAAS_METRICS_PORT
+              value: "9108"
+            - name: FAAS_HEALTH_PORT
+              value: "8080"
+            {{- if $.Values.events.enabled }}
+            - name: FAAS_EVENTS
+              value: otlp
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.events.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            {{- end }}
+            - name: FAAS_AUDIO_BUCKET
+              value: {{ $.Values.objectStore.bucket | quote }}
+            {{- if $.Values.objectStore.endpoint }}
+            - name: FAAS_S3_ENDPOINT_URL
+              value: {{ $.Values.objectStore.endpoint | quote }}
+            - name: FAAS_S3_ADDRESSING_STYLE
+              value: {{ $.Values.objectStore.addressingStyle | quote }}
+            {{- end }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ $.Values.objectStore.region | quote }}
+            {{- if $isHydrator }}
+            - name: FAAS_AUDIO_API_URL
+              value: {{ $.Values.audioApi.url | quote }}
+            {{- end }}
+            # Scratch has to be somewhere the process can write, whatever UID
+            # it was given. TMPDIR is what tempfile honours, which is what the
+            # transcoder uses for ffmpeg's working files.
+            - name: TMPDIR
+              value: /scratch
+            {{- with $function.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ $.Values.objectStore.secretName }}
+            {{- with $.Values.kafka.secretName }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          livenessProbe:
+            # Is the poll loop turning? Not "is work finished" -- a pod chewing
+            # through a 5-minute file is slow, not wedged, and restarting it
+            # turns one slow call into a redelivered one.
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            # Does it hold partitions? During a rebalance it holds none, which
+            # is a routing fact rather than a health one -- hence a separate
+            # probe that never causes a restart.
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 2
+          startupProbe:
+            # Joining a group takes a moment, and until it happens liveness has
+            # nothing meaningful to say. This is what keeps a slow start from
+            # being read as a wedge.
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests:
+              cpu: {{ $function.resources.cpu | default 1 | quote }}
+              memory: {{ $function.resources.memory | default "512Mi" | quote }}
+            limits:
+              # No CPU limit on purpose: throttling a function mid-file makes it
+              # miss per_file_timeout_seconds and dead-letter work that would
+              # otherwise have finished. Memory is limited because the failure
+              # mode there is the node, not the file.
+              memory: {{ $function.resources.memory | default "512Mi" | quote }}
+              {{- with $function.resources.gpu }}
+              nvidia.com/gpu: {{ . | quote }}
+              {{- end }}
+          volumeMounts:
+            - name: scratch
+              mountPath: /scratch
+            - name: declaration
+              mountPath: /app/declaration
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            # The image writes only to /scratch, so the root filesystem can be
+            # immutable -- which is what restricted-v2 wants and one less way
+            # for a compromised function to persist anything.
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ $function.scratchSize | default "2Gi" }}
+        - name: declaration
+          configMap:
+            name: faas-declarations
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faas-{{ $function.name }}
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+    faas.function: {{ $function.id }}
+spec:
+  clusterIP: None
+  selector:
+    faas.function: {{ $function.id }}
+  ports:
+    - name: metrics
+      port: 9108
+      targetPort: metrics
+    - name: health
+      port: 8080
+      targetPort: health
+{{- if gt (int ($function.replicas | default 1)) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: faas-{{ $function.name }}
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+spec:
+  # A node drain must not take every replica of one function at once. Only
+  # meaningful above one replica -- a PDB over a single pod blocks the drain
+  # instead of protecting anything.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      faas.function: {{ $function.id }}
+{{- end }}
+{{- end }}

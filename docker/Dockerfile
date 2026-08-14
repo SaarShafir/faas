@@ -61,7 +61,23 @@ USER 1001:0
 
 FROM base AS function
 
-ENV FAAS_FUNCTION=duration_rms
+# One image per function, because that is what the declarations say:
+#
+#     image: registry/faas-clipping-detect:1.0.0
+#
+# The build argument picks which one, so `scripts/build_images.py` can read the
+# declarations and produce exactly the tags they name -- the image in git and
+# the image in the registry cannot drift, because one is generated from the
+# other.
+#
+# The whole `functions/` tree is present in the layer either way (it is a few
+# kilobytes of Python and sharing the layer across images is worth more than
+# excluding it), but only one function is ever started, and the declaration
+# mounted at FAAS_DECLARATION belongs to it.
+ARG FUNCTION=duration_rms
+ENV FAAS_FUNCTION=${FUNCTION}     FAAS_DECLARATION=/app/functions/${FUNCTION}/function.yaml     FAAS_HEALTH_PORT=8080
+
+EXPOSE 8080 9108
 CMD ["sh", "-c", "exec python -m functions.${FAAS_FUNCTION}.function"]
 
 
@@ -80,7 +96,9 @@ USER 1001:0
 
 COPY hydrator.yaml ./hydrator.yaml
 
-ENV FAAS_DECLARATION=/app/hydrator.yaml
+ENV FAAS_DECLARATION=/app/hydrator.yaml     FAAS_HEALTH_PORT=8080
+
+EXPOSE 8080 9108
 CMD ["faas-hydrator"]
 
 

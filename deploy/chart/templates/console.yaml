@@ -1,0 +1,171 @@
+{{- if .Values.console.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: faas-console
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: console
+  template:
+    metadata:
+      labels:
+        {{- include "faas.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: console
+    spec:
+      serviceAccountName: {{ .Values.console.serviceAccount.name }}
+      securityContext:
+        fsGroup: 0
+      containers:
+        - name: console
+          image: {{ include "faas.image" (dict "function" (dict "image" .Values.console.image) "root" $) }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.kafka.bootstrapServers | quote }}
+            - name: FAAS_EVENTS_URL
+              value: {{ .Values.console.eventsUrl | quote }}
+            - name: FAAS_EVENTS_INDEX
+              value: {{ .Values.console.eventsIndex | quote }}
+            - name: FAAS_GRAFANA_URL
+              value: {{ .Values.console.grafanaUrl | quote }}
+            # The declarations, mounted from the same ConfigMap the functions
+            # read. The console renders them and never writes them: §8's
+            # "one PR, zero infra tickets" only holds while git is the single
+            # source of truth for what a function is.
+            - name: FAAS_FUNCTIONS_DIR
+              value: /app/declaration
+            # Pausing scales a Deployment to zero through the API server. The
+            # local stack does it over the Docker socket, which OpenShift does
+            # not have; this is the namespace it is allowed to touch.
+            - name: FAAS_K8S_NAMESPACE
+              value: {{ $.Release.Namespace }}
+            - name: FAAS_CONSOLE_ALLOW_WRITES
+              value: {{ .Values.console.allowWrites | quote }}
+            - name: FAAS_CONSOLE_SANDBOX
+              value: {{ .Values.console.sandbox | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: declaration
+              mountPath: /app/declaration
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            {{- if not .Values.console.sandbox }}
+            readOnlyRootFilesystem: true
+            {{- end }}
+      volumes:
+        - name: declaration
+          configMap:
+            name: faas-declarations
+        - name: scratch
+          emptyDir:
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faas-console
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/component: console
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.console.serviceAccount.name }}
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+{{- if .Values.console.allowWrites }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: faas-console-scale
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+rules:
+  # Exactly enough to pause and resume a function in this namespace, and
+  # nothing else. No pod exec, no secrets, no other namespace, no create and no
+  # delete -- the console can stop a function and start it again, and that is
+  # the whole of it.
+  #
+  # `patch` on deployments rather than on deployments/scale because pausing has
+  # to remember what it is resuming to: one merge-patch sets replicas to zero
+  # and records the previous count in an annotation, so a console restart in
+  # between does not strand a function at zero.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: faas-console-scale
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: faas-console-scale
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.console.serviceAccount.name }}
+{{- end }}
+{{- if .Values.console.route.enabled }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: faas-console
+  labels:
+    {{- include "faas.labels" $ | nindent 4 }}
+spec:
+  {{- with .Values.console.route.host }}
+  host: {{ . }}
+  {{- end }}
+  to:
+    kind: Service
+    name: faas-console
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}
+{{- end }}
