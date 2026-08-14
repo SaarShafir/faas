@@ -34,7 +34,10 @@ WORKDIR /app
 # Dependencies first, so a change to a function does not reinstall the world.
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir ".[runtime]"
+# `metrics` alongside `runtime`: the §5.5 set is emitted by every runner, and
+# without the exporter installed FAAS_METRICS=prometheus degrades to NullMetrics
+# and the pod is silently invisible to the dashboards.
+RUN pip install --no-cache-dir ".[runtime,metrics]"
 
 # `functions/` is deliberately not packaged: a function lives beside its
 # declaration in the repo (§8), not inside the SDK distribution.
@@ -72,7 +75,7 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir ".[hydrator]"
+RUN pip install --no-cache-dir ".[hydrator,metrics]"
 USER 1001:0
 
 COPY hydrator.yaml ./hydrator.yaml
@@ -90,7 +93,7 @@ CMD ["faas-hydrator"]
 FROM hydrator AS harness
 
 USER root
-RUN pip install --no-cache-dir ".[hydrator]" boto3
+RUN pip install --no-cache-dir ".[hydrator,metrics]" boto3
 USER 1001:0
 
 COPY stress/ ./stress/

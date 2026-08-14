@@ -14,7 +14,7 @@ from .clock import SystemClock
 from .config import FunctionConfig
 from .dlq import DeadLetterQueue
 from .function import validate
-from .metrics import NullMetrics
+from .metrics import from_env as metrics_from_env
 from .pool import ProcessWorkerPool
 from .results import ResultEmitter
 from .runner import FunctionRunner
@@ -62,7 +62,15 @@ def build_runner(
 
         codec = ProtobufCodec()
     clock = clock or SystemClock()
-    metrics = metrics or NullMetrics()
+    # §5.5's whole point is that the SDK emits this and function authors never
+    # do. It was being emitted into NullMetrics in every deployment, which is
+    # the same as not emitting it -- `from_env` is what gives it somewhere to go.
+    metrics = metrics or metrics_from_env(
+        **{
+            "service.name": config.function_id,
+            "service.version": config.function_version,
+        }
+    )
     bootstrap_servers = bootstrap_servers or os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "")
 
     if object_store is None:

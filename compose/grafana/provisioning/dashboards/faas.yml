@@ -1,0 +1,16 @@
+apiVersion: 1
+
+# Dashboards live in the repo as JSON and are provisioned read-only, so they are
+# reviewed like code rather than edited in a UI and lost on the next redeploy.
+# To change one: edit it in Grafana, export the JSON, commit it.
+providers:
+  - name: faas
+    orgId: 1
+    folder: FaaS
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 15
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

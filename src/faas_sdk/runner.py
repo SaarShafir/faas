@@ -31,6 +31,7 @@ from .metrics import (
     DLQ,
     FILE_LATENCY,
     IN_FLIGHT,
+    MAX_POLL_EXCEEDED,
     PROCESSED,
     REALTIME_MULTIPLE,
     RETRIES,
@@ -89,6 +90,9 @@ class FunctionRunner:
         self._paused = False
         self._running = False
         self._last_commit = self.clock.monotonic()
+        # librdkafka counts evictions on the consumer; this is the last value
+        # already reported, so only the delta is emitted.
+        self._reported_evictions = 0
         self._labels = {
             "function_id": config.function_id,
             "function_version": config.function_version,
@@ -140,10 +144,30 @@ class FunctionRunner:
 
         self._commit()
         self.metrics.gauge(IN_FLIGHT, self.in_flight, **self._labels)
+        self._report_evictions()
 
     @property
     def in_flight(self) -> int:
         return len(self._in_flight)
+
+    def _report_evictions(self) -> None:
+        """Carry the consumer's eviction count out to the metrics.
+
+        A non-zero value is the §5.2 failure happening: the poll loop blocked
+        past max.poll.interval.ms, the coordinator evicted this consumer, and
+        whatever was in flight is being reprocessed by whoever picks the
+        partitions up. The consumer has always counted it; without this nobody
+        outside the process could see it.
+
+        Only consumers that count it have the attribute -- the fakes do not, and
+        should not have to grow one to be used.
+        """
+        total = getattr(self.consumer, "max_poll_exceeded", 0)
+        if total > self._reported_evictions:
+            self.metrics.counter(
+                MAX_POLL_EXCEEDED, total - self._reported_evictions, **self._labels
+            )
+            self._reported_evictions = total
 
     @property
     def _occupancy(self) -> int:

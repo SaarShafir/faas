@@ -38,8 +38,15 @@ x-function: &function
   restart: unless-stopped
   profiles: [stack]
 
+x-metrics: &metrics
+  # §5.5's set, which the SDK emits for every function for free and which was
+  # going into NullMetrics in every deployment until this existed. Each pod
+  # serves its own /metrics; Prometheus finds them by DNS (see init/prometheus.yml).
+  FAAS_METRICS: prometheus
+  FAAS_METRICS_PORT: "9108"
+
 x-function-env: &function-env
-  <<: *s3
+  <<: [*s3, *metrics]
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
   # The flaky function's "have I seen this call before" markers. Under /scratch
@@ -198,7 +205,7 @@ services:
       audio-api: {condition: service_healthy}
     restart: unless-stopped
     environment:
-      <<: *s3
+      <<: [*s3, *metrics]
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       FAAS_AUDIO_API_URL: http://audio-api:8080
       FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
@@ -284,6 +291,51 @@ services:
       FAAS_DECLARATION: /app/functions/flaky_analyzer/function.yaml
       FAAS_FLAKY_TRANSIENT_RATE: ${FLAKY_TRANSIENT_RATE:-0.15}
       FAAS_FLAKY_POISON_RATE: ${FLAKY_POISON_RATE:-0.05}
+
+  # -- observability -------------------------------------------------------
+  #
+  # Two sources, deliberately. The SDK's own §5.5 metrics come from each pod's
+  # /metrics. Consumer lag additionally comes from kafka-exporter, which is what
+  # the autoscaler would scale on (§5.5, §11) -- so the SDK's lag gauge is a
+  # cross-check against it rather than the source of truth.
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    profiles: [stack]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      # Needed for the alert rules to resolve against a short local run.
+      - --web.enable-lifecycle
+    ports: ["9090:9090"]
+    volumes:
+      - ./init/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./init/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    profiles: [stack]
+    depends_on:
+      kafka: {condition: service_healthy}
+    command: ["--kafka.server=kafka:9092"]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    profiles: [stack]
+    depends_on:
+      prometheus: {condition: service_started}
+    ports: ["3000:3000"]
+    environment:
+      # Local stack on a private network: an anonymous admin is one less thing
+      # between an operator and the dashboard. Do not copy this to a cluster.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
 
   # -- the harness ---------------------------------------------------------
   #

@@ -1,0 +1,59 @@
+# Scrape config for the local stack.
+#
+# DNS service discovery rather than static host:port pairs, and the reason is
+# the hydrator: it runs with replicas, and compose gives a replicated service a
+# single DNS name that resolves to every replica's address. A static target
+# would scrape whichever one the resolver happened to return first and silently
+# miss the others -- so half the fleet would be invisible, which is exactly the
+# failure this whole exercise exists to prevent.
+#
+# `type: A` returns every address behind the name, so the target list grows and
+# shrinks with `docker compose up --scale`.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Every runner: the ten functions and the hydrator, all serving the §5.5 set
+  # on the same port.
+  - job_name: faas
+    dns_sd_configs:
+      - names:
+          - hydrator
+          - duration-rms
+          - silence-ratio
+          - clipping-detect
+          - zero-crossing-rate
+          - spectral-centroid
+          - spectral-rolloff
+          - snr-estimate
+          - energy-vad
+          - slow-burner
+          - flaky-analyzer
+        type: A
+        port: 9108
+        refresh_interval: 15s
+    relabel_configs:
+      # Without this the instance label is a container IP that changes on every
+      # restart, which makes a dashboard useless across a redeploy.
+      - source_labels: [__meta_dns_name]
+        target_label: service
+      # Keep the address too: with replicas, `service` alone is ambiguous and
+      # "which replica" is the first question when one of them misbehaves.
+      - source_labels: [__address__]
+        target_label: instance
+
+  # Consumer lag in messages, per group and partition. This is the series the
+  # autoscaler would scale on (§11), so the dashboards read it rather than the
+  # SDK's own gauge.
+  - job_name: kafka
+    static_configs:
+      - targets: [kafka-exporter:9308]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

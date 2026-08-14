@@ -24,10 +24,17 @@ hydrator = [
     "boto3>=1.34",
     "requests>=2.31",
 ]
+# Set FAAS_METRICS=prometheus to use these; without the extra installed the SDK
+# falls back to NullMetrics and logs why, rather than failing to boot.
 metrics = [
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",
     "opentelemetry-exporter-prometheus>=0.46b0",
+    # The exporter reads through prometheus_client's registry, and start_http_server
+    # is what actually serves /metrics. It arrives as a transitive dependency
+    # today; naming it here means the scrape endpoint is not one upstream
+    # packaging decision away from disappearing.
+    "prometheus-client>=0.20",
 ]
 dev = [
     "pytest>=8.0",

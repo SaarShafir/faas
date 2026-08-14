@@ -1,0 +1,114 @@
+# §12's thresholds, expressed as rules.
+#
+#   "Alert at 1h lag, page at 3h. With a 24h object TTL this is a real
+#    remediation window, not a cliff."
+#
+# The subtlety is that §12 states the threshold in *hours* and kafka-exporter
+# reports lag in *messages*. Those are not the same quantity and the conversion
+# is the whole point of these rules: 300 messages is nothing for
+# zero_crossing_rate and most of an hour for slow_burner.
+#
+# Time-to-drain = backlog / consumption rate. Division by a zero rate gives
+# +Inf, which is correct -- a group that is not consuming will never drain -- and
+# compares true against any threshold, so a stalled consumer pages. A group with
+# no lag and no rate gives 0/0 = NaN, which compares false, so an idle function
+# stays quiet. That is the behaviour we want from both edges.
+#
+# `clamp_min(..., 0)` is not cosmetic. kafka-exporter reports lag as -1 for a
+# partition the group has no committed offset on, which is its encoding of
+# "unknown", not a measurement. With a 200-partition topic most partitions hold
+# no records for any given run, so the raw sum goes *negative* -- and a negative
+# backlog never exceeds 3600, so every rule below would have sat silently at
+# zero for ever. Found the first time these rules were run against real data.
+
+groups:
+  - name: faas-lag
+    rules:
+      - record: faas:consumergroup_lag_seconds
+        expr: |
+          sum by (consumergroup) (clamp_min(kafka_consumergroup_lag, 0))
+          /
+          sum by (consumergroup) (rate(kafka_consumergroup_current_offset[5m]))
+
+      - record: faas:consumergroup_lag_messages
+        expr: sum by (consumergroup) (clamp_min(kafka_consumergroup_lag, 0))
+
+      - alert: FaasLagOverOneHour
+        expr: faas:consumergroup_lag_seconds > 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.consumergroup }} is more than 1h behind"
+          description: >
+            §12's alert threshold. The 24h object TTL is what makes this a
+            remediation window rather than a cliff -- audio for the oldest
+            unprocessed call is deleted 24h after hydration, and a call whose
+            object is gone needs an Audio API re-fetch to recover.
+
+      - alert: FaasLagOverThreeHours
+        expr: faas:consumergroup_lag_seconds > 10800
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.consumergroup }} is more than 3h behind -- page"
+          description: >
+            §12's paging threshold. At this point a quarter of the object TTL is
+            spent and the backlog is unlikely to drain without more replicas.
+
+      - alert: FaasConsumerStalled
+        # Lag that is not moving at all. Distinct from "behind": a function that
+        # is slow will still page eventually on the rules above, but one that has
+        # stopped consuming should be named immediately rather than waiting for
+        # its backlog to cross an hour. This is the shape the timeout crash-loop
+        # had -- lag flat, throughput zero, restarts climbing.
+        expr: |
+          sum by (consumergroup) (clamp_min(kafka_consumergroup_lag, 0)) > 0
+          and
+          sum by (consumergroup) (rate(kafka_consumergroup_current_offset[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.consumergroup }} has lag but is not consuming"
+
+  - name: faas-health
+    rules:
+      - alert: FaasDlqRateElevated
+        # A DLQ that is never written to has not been tested; one that is being
+        # written to steadily means a producer or a function version is wrong.
+        expr: sum by (function_id) (rate(faas_dlq_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.function_id }} is dead-lettering steadily"
+
+      - alert: FaasBelowRealtimeFloor
+        # §8's onboarding contract: >=25x realtime per core. Not a page -- it is
+        # a capacity-review trigger, and it fires on a function that has drifted
+        # below the floor it was admitted on.
+        expr: |
+          histogram_quantile(
+            0.5,
+            sum by (function_id, le) (rate(faas_realtime_multiple_bucket[30m]))
+          ) < 25
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.function_id }} is under §8's 25x realtime floor"
+          description: >
+            Concurrency required is 5000/speedup, so a function that has slipped
+            from 25x to 10x needs two and a half times the pods to keep up.
+
+      - alert: FaasRunnerEvicted
+        # The §5.2 failure caught in the act: the poll loop blocked long enough
+        # for the coordinator to evict this consumer, so in-flight work is being
+        # reprocessed. Rare and serious.
+        expr: increase(faas_max_poll_exceeded_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.function_id }} exceeded max.poll.interval.ms"

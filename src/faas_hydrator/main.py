@@ -16,7 +16,7 @@ import signal
 from faas_sdk.clock import SystemClock
 from faas_sdk.config import FunctionConfig
 from faas_sdk.dlq import DeadLetterQueue
-from faas_sdk.metrics import NullMetrics
+from faas_sdk.metrics import from_env as metrics_from_env
 from faas_sdk.pool import InlineWorkerPool
 from faas_sdk.runner import FunctionRunner
 
@@ -46,7 +46,15 @@ def build_runner(
 ) -> FunctionRunner:
     config = config or FunctionConfig.from_yaml(DECLARATION_PATH)
     clock = clock or SystemClock()
-    metrics = metrics or NullMetrics()
+    # The hydrator is a consumer group like any other (§8) and belongs on the
+    # same dashboards -- its lag is the first thing to move when the Audio API
+    # or the object store is the constraint.
+    metrics = metrics or metrics_from_env(
+        **{
+            "service.name": config.function_id,
+            "service.version": config.function_version,
+        }
+    )
     bootstrap_servers = bootstrap_servers or os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "")
 
     if codec is None:

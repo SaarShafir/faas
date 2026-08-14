@@ -1,0 +1,231 @@
+{
+  "uid": "faas-fleet",
+  "title": "FaaS — fleet",
+  "tags": ["faas"],
+  "timezone": "browser",
+  "editable": false,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "One row per consumer group, because that is one `(function, version)` pair (§4.3) and the unit of isolation. **Nine functions at zero lag while one is saturated is the platform working**, not an outage — the whole point of independent groups is that a slow function is nobody else's problem. Lag thresholds are §12's: warn at 1h, page at 3h."
+      }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Backlog, in time (§12: warn 1h, page 3h)",
+      "description": "kafka-exporter reports lag in messages; §12 states its thresholds in hours. This is lag divided by consumption rate, which is the conversion between them. A group that has stopped consuming divides by zero and goes to +Inf, which is correct — it will never drain. A group with no lag and no rate is 0/0 and drops out entirely, so idle functions stay off the chart.",
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 5, "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 3600 },
+              { "color": "red", "value": 10800 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        {
+          "expr": "faas:consumergroup_lag_seconds",
+          "legendFormat": "{{consumergroup}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Groups behind",
+      "description": "Anything over §12's 1h warn threshold.",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "count(faas:consumergroup_lag_seconds > 3600) or vector(0)", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Evictions (§5.2)",
+      "description": "max.poll.interval.ms exceeded: the poll loop blocked, the coordinator evicted the consumer, and in-flight work is being reprocessed. This should be zero. Anything else means the §5.2 failure is happening right now.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "sum(increase(faas_max_poll_exceeded_total[1h])) or vector(0)", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Files/sec",
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "targets": [
+        { "expr": "sum(rate(faas_processed_total[1m]))", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Dead letters/min",
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "sum(rate(faas_dlq_total[5m])) * 60", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "table",
+      "title": "Fleet",
+      "description": "The scan view. Lag in messages and in time, throughput, and where each function sits against §8's 25x realtime floor.",
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 12 },
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "consumergroup", "mode": "outer" } }
+      ],
+      "targets": [
+        {
+          "expr": "faas:consumergroup_lag_messages",
+          "legendFormat": "{{consumergroup}}",
+          "instant": true,
+          "format": "table",
+          "refId": "lag_messages"
+        },
+        {
+          "expr": "faas:consumergroup_lag_seconds",
+          "instant": true,
+          "format": "table",
+          "refId": "lag_seconds"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Throughput by function",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "expr": "sum by (function_id) (rate(faas_processed_total[1m]))",
+          "legendFormat": "{{function_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Realtime multiple, p50 (§8 floor: 25x)",
+      "description": "Audio seconds processed per second of processing, per file. §8's onboarding contract is >=25x per core: concurrency required is 5000/speedup, so a 2x function needs ~2,500 concurrent files where a 25x function needs ~200. A function that drifts below the line it was admitted on needs a capacity review, not a page.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 25 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (function_id, le) (rate(faas_realtime_multiple_bucket[5m])))",
+          "legendFormat": "{{function_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "In-flight depth",
+      "description": "§5.2 prefers one consumer per pod with shallow depth, scaling pod count rather than depth. A function pinned at its in_flight ceiling is saturated and its partitions are paused.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 31 },
+      "targets": [
+        {
+          "expr": "sum by (function_id) (faas_in_flight)",
+          "legendFormat": "{{function_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Retries by reason",
+      "description": "A steady retry rate against one reason code is a dependency telling you something.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 31 },
+      "targets": [
+        {
+          "expr": "sum by (function_id, reason) (rate(faas_retries_total[5m]))",
+          "legendFormat": "{{function_id}} {{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Dead letters by reason",
+      "description": "The DLQ holds the input message for replay (§5.4). An empty DLQ means the path is untested; a growing one means a function version or a producer is wrong.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 31 },
+      "targets": [
+        {
+          "expr": "sum by (function_id, reason) (rate(faas_dlq_total[5m]))",
+          "legendFormat": "{{function_id}} {{reason}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

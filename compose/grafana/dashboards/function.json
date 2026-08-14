@@ -1,0 +1,150 @@
+{
+  "uid": "faas-function",
+  "title": "FaaS — function detail",
+  "tags": ["faas"],
+  "timezone": "browser",
+  "editable": false,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "function",
+        "label": "Function",
+        "type": "query",
+        "query": "label_values(faas_processed_total, function_id)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "version",
+        "label": "Version",
+        "type": "query",
+        "query": "label_values(faas_processed_total{function_id=\"$function\"}, function_version)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Scoped to one `(function, version)` — the consumer group, and the unit that has its own offsets, lag, scaling and DLQ (§4.3). Leaving **Version** on *All* puts a shadow deploy side by side with the version it is shadowing, which §4.3 gets for free."
+      }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Outcome mix",
+      "description": "SUCCESS / SKIPPED / FAILED. SKIPPED is a deliberate answer, not a failure — a function that cannot say anything useful about a file (silence, too short) returns nothing rather than inventing a number, and a rising SKIPPED share usually means the input mix changed.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } } } },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(faas_processed_total{function_id=\"$function\", function_version=~\"$version\"}[1m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Per-file latency",
+      "description": "Wall time from submit to outcome, which includes retries and the queueing behind a saturated pool — not just the time spent computing.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(faas_file_latency_bucket{function_id=\"$function\", function_version=~\"$version\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faas_file_latency_bucket{function_id=\"$function\", function_version=~\"$version\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faas_file_latency_bucket{function_id=\"$function\", function_version=~\"$version\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Realtime multiple vs §8's floor",
+      "description": "The onboarding contract, measured continuously rather than once at review time. Below 25 the concurrency this function needs (5000/speedup) grows faster than the pod count anyone budgeted for.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 25 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(faas_realtime_multiple_bucket{function_id=\"$function\", function_version=~\"$version\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.05, sum by (le) (rate(faas_realtime_multiple_bucket{function_id=\"$function\", function_version=~\"$version\"}[5m])))",
+          "legendFormat": "p05 (worst files)",
+          "refId": "B"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Backlog and in-flight depth",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "targets": [
+        {
+          "expr": "sum(clamp_min(kafka_consumergroup_lag{consumergroup=~\"$function:.*\"}, 0))",
+          "legendFormat": "lag (messages)",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(faas_in_flight{function_id=\"$function\", function_version=~\"$version\"})",
+          "legendFormat": "in flight",
+          "refId": "B"
+        }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Failure ladder",
+      "description": "Retries, then dead letters, by reason code. A retry that never becomes a dead letter is a dependency recovering as designed; a reason code that appears in both is one that is not.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 19 },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(faas_retries_total{function_id=\"$function\", function_version=~\"$version\"}[5m]))",
+          "legendFormat": "retry {{reason}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (reason) (rate(faas_dlq_total{function_id=\"$function\", function_version=~\"$version\"}[5m]))",
+          "legendFormat": "DLQ {{reason}}",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}
