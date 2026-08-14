@@ -23,10 +23,12 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ ALLOW_WRITES = os.environ.get("FAAS_CONSOLE_ALLOW_WRITES", "").strip().lower() i
 AUDIT_PATH = Path(os.environ.get("FAAS_CONSOLE_AUDIT_LOG", "/runs/console-audit.jsonl"))
 REPO_DIR = Path(os.environ.get("FAAS_REPO_DIR", "/repo"))
 COMPOSE_PROJECT = os.environ.get("FAAS_COMPOSE_PROJECT", "faas-local")
+DOCKER_SOCKET = os.environ.get("FAAS_DOCKER_SOCKET", "/var/run/docker.sock")
 
 
 class WritesDisabled(RuntimeError):
@@ -74,6 +77,40 @@ def audit(action: str, **fields) -> None:
     except OSError as exc:
         # An unwritable audit log must not silently allow unaudited actions.
         raise WritesDisabled(f"cannot write the audit log at {AUDIT_PATH}: {exc}") from exc
+
+
+def _docker(method: str, path: str):
+    """One request to the Docker Engine API over its UNIX socket.
+
+    http.client speaks HTTP over any socket; only the connection differs.
+    """
+    import http.client
+    import socket as socket_module
+
+    if not hasattr(socket_module, "AF_UNIX"):
+        # Windows has no UNIX sockets. The console runs in a Linux container in
+        # the stack, so this only bites when it is run directly on a Windows
+        # host -- as an OSError rather than an AttributeError, so the caller's
+        # "cannot reach the Docker socket" path handles it like any other.
+        raise OSError("this platform has no UNIX sockets, so the Docker socket is unreachable")
+
+    class UnixConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            self.sock.settimeout(30)
+            self.sock.connect(DOCKER_SOCKET)
+
+    connection = UnixConnection("localhost", timeout=30)
+    try:
+        connection.request(method, path)
+        response = connection.getresponse()
+        body = response.read()
+        if response.status >= 400:
+            detail = body[:200].decode(errors="replace")
+            raise OSError(f"docker returned {response.status}: {detail}")
+        return json.loads(body) if body.strip().startswith(b"[") else None
+    finally:
+        connection.close()
 
 
 def _guard(action: str, **fields) -> None:
@@ -183,10 +220,14 @@ def pause_function(function_id: str, *, resume: bool = False) -> ActionResult:
 
     **This is local-stack mechanics and does not generalise.** Kafka has no
     server-side "pause this group": a group is only paused in the sense that
-    nobody is polling it. Here that means stopping the container, which needs
-    the Docker socket mounted into the console -- a socket that is equivalent to
-    root on the host, and the single strongest reason this console must not be
-    exposed without authentication.
+    nobody is polling it. Here that means stopping the container, over the
+    Docker socket -- a socket equivalent to root on the host, and the single
+    strongest reason this console must not be exposed without authentication.
+
+    The API is spoken directly rather than through the CLI: `docker.io` does
+    not ship the compose v2 plugin, so `docker compose stop` is not available
+    inside a container that only has the daemon package, and a stopped
+    container is one HTTP POST anyway.
 
     On OpenShift the equivalent is `oc scale --replicas=0`, and the honest
     version of this feature there is a control that talks to the API server with
@@ -201,16 +242,36 @@ def pause_function(function_id: str, *, resume: bool = False) -> ActionResult:
     _guard(action, function_id=function_id)
 
     service = function_id.replace("_", "-")
-    command = ["docker", "compose", "-p", COMPOSE_PROJECT, "start" if resume else "stop", service]
     try:
-        completed = subprocess.run(
-            command, cwd=REPO_DIR / "compose", capture_output=True, text=True, timeout=60
+        # Quoted: the filter is JSON, JSON has spaces, and a raw space in a
+        # request line is rejected before it reaches Docker.
+        filters = quote(
+            json.dumps(
+                {
+                    "label": [
+                        f"com.docker.compose.project={COMPOSE_PROJECT}",
+                        f"com.docker.compose.service={service}",
+                    ]
+                },
+                separators=(",", ":"),
+            )
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return ActionResult(False, f"could not {action} {service}", detail=str(exc))
+        containers = _docker("GET", f"/containers/json?all=1&filters={filters}")
+    except OSError as exc:
+        return ActionResult(
+            False,
+            "cannot reach the Docker socket",
+            detail=f"{exc}. Pause needs /var/run/docker.sock mounted into the console.",
+        )
 
-    if completed.returncode != 0:
-        return ActionResult(False, f"could not {action} {service}", detail=completed.stderr[-500:])
+    if not containers:
+        return ActionResult(False, f"no container for service {service}")
+
+    for container in containers:
+        try:
+            _docker("POST", f"/containers/{container['Id']}/{'start' if resume else 'stop'}")
+        except OSError as exc:
+            return ActionResult(False, f"could not {action} {service}", detail=str(exc))
 
     return ActionResult(
         True,
@@ -230,12 +291,24 @@ def pause_function(function_id: str, *, resume: bool = False) -> ActionResult:
 def save_to_branch(
     *, relative_path: str, content: str, message: str, branch: str | None = None
 ) -> ActionResult:
-    """Write a file and commit it to a new branch. Never to the working branch.
+    """Commit an edit to a new branch without touching the working tree.
 
     This is what keeps §8 true. The console is a nicer editor; it is not a
     deployment mechanism. Nothing here reaches a running pod -- the change has
     to be reviewed, merged and built into an image like any other, which is
     the property that makes a bad edit recoverable.
+
+    **It uses plumbing rather than checkout, and that is the important part.**
+    The obvious implementation -- `checkout -b`, write the file, commit, check
+    the original branch back out -- runs inside somebody's live checkout. If
+    they have uncommitted work, the console is now moving HEAD underneath them,
+    and a failure halfway through leaves them on a branch they never asked for.
+
+    So: hash the content into a blob, build a tree from HEAD's with that one
+    path replaced, commit that tree, and point a new ref at it. HEAD does not
+    move, the index is a throwaway file, and the file on disk is untouched --
+    what you edited in the browser is on a branch, and your working tree is
+    exactly as you left it.
     """
     _guard("save", path=relative_path, branch=branch)
 
@@ -251,41 +324,78 @@ def save_to_branch(
 
     branch = branch or f"console/{Path(relative_path).parent.name}-{int(time.time())}"
 
-    def git(*args, check=True):
+    def git(*args, stdin: str | None = None, env: dict | None = None) -> str:
         result = subprocess.run(
-            ["git", *args], cwd=REPO_DIR, capture_output=True, text=True, timeout=60
+            [
+                "git",
+                # The repo arrives as a bind mount owned by the host user while
+                # this process runs as another, which git refuses by default
+                # ("dubious ownership"). That check exists to stop someone
+                # else's repo config being executed; a mount we were handed
+                # deliberately is the case it is not aimed at.
+                "-c",
+                f"safe.directory={REPO_DIR}",
+                *args,
+            ],
+            cwd=REPO_DIR,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, **(env or {})},
         )
-        if check and result.returncode != 0:
-            raise RuntimeError(f"git {' '.join(args)}: {result.stderr.strip()}")
+        if result.returncode != 0:
+            raise RuntimeError(f"git {args[0]}: {result.stderr.strip()}")
         return result.stdout.strip()
 
     try:
-        original = git("rev-parse", "--abbrev-ref", "HEAD")
-        git("checkout", "-b", branch)
-        target.write_text(content, encoding="utf-8")
-        git("add", relative_path)
-        git(
+        head = git("rev-parse", "HEAD")
+        # `--path` matters: without it the content skips the clean filters git
+        # would normally apply, and this repo has .gitattributes rules forcing
+        # LF on exactly these files. The blob then differs from what `git add`
+        # would produce, so an unchanged file looks changed and every save
+        # commits a spurious line-ending diff.
+        blob = git("hash-object", "-w", "--path", relative_path, "--stdin", stdin=content)
+
+        # A scratch index, so the real one is never read or written.
+        with tempfile.TemporaryDirectory(prefix="faas-console-git-") as scratch:
+            index = {"GIT_INDEX_FILE": str(Path(scratch) / "index")}
+            git("read-tree", head, env=index)
+            git(
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"100644,{blob},{relative_path}",
+                env=index,
+            )
+            tree = git("write-tree", env=index)
+
+        if tree == git("rev-parse", f"{head}^{{tree}}"):
+            return ActionResult(False, "nothing changed; the content is identical to HEAD")
+
+        commit = git(
             "-c",
             "user.name=faas-console",
             "-c",
             "user.email=console@faas.local",
-            "commit",
+            "commit-tree",
+            tree,
+            "-p",
+            head,
             "-m",
             message,
         )
-        head = git("rev-parse", "--short", "HEAD")
-        # Back to where the operator was, so the console never leaves the
-        # working tree on a branch nobody asked for.
-        git("checkout", original)
+        git("update-ref", f"refs/heads/{branch}", commit)
     except RuntimeError as exc:
         return ActionResult(False, "could not commit the change", detail=str(exc))
 
     return ActionResult(
         True,
-        f"committed {head} to {branch}",
+        f"committed {commit[:9]} to {branch}",
         detail=(
-            "Nothing is deployed. Push the branch and open a PR -- the running "
-            "pods keep executing the image they were built from until a merged "
-            "change is built and rolled out."
+            "Your working tree and current branch are untouched. Nothing is "
+            "deployed either: push the branch and open a PR -- the running pods "
+            "keep executing the image they were built from until a merged change "
+            "is built and rolled out."
         ),
     )

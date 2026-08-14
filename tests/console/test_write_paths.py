@@ -124,10 +124,91 @@ def test_an_edit_lands_on_a_new_branch_and_leaves_the_original_checked_out(monke
 
     assert result.ok, result.detail
     assert git("rev-parse", "--abbrev-ref", "HEAD") == "main"
-    # The working branch is untouched; the edit is on the new one.
+    # The working tree is untouched: the console commits with plumbing rather
+    # than checking a branch out inside somebody's live checkout.
     assert (target / "function.py").read_text() == "original\n"
     assert "console/test" in git("branch", "--list", "console/test")
+    assert git("show", "console/test:functions/duration_rms/function.py") == "edited"
     assert "Nothing is deployed" in result.detail
+
+
+def test_an_edit_does_not_disturb_uncommitted_work(monkeypatch, tmp_path):
+    """The reason this uses git plumbing rather than a checkout.
+
+    Committing by checking out a branch runs inside somebody's live checkout:
+    it moves HEAD underneath them, and a failure halfway through strands them
+    on a branch they never asked for. This ran against a working tree with
+    uncommitted changes during development, which is how the problem surfaced.
+    """
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    target = tmp_path / "functions" / "duration_rms"
+    target.mkdir(parents=True)
+    (target / "function.py").write_text("original\n")
+    git("add", "-A")
+    git("commit", "-m", "initial")
+
+    # Uncommitted work, exactly as someone mid-change would have.
+    (tmp_path / "scratch.txt").write_text("work in progress\n")
+    (target / "function.py").write_text("locally modified\n")
+
+    monkeypatch.setattr(actions, "ALLOW_WRITES", True)
+    monkeypatch.setattr(actions, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(actions, "REPO_DIR", tmp_path)
+
+    result = actions.save_to_branch(
+        relative_path="functions/duration_rms/function.py",
+        content="from the console\n",
+        message="Console edit",
+        branch="console/edit",
+    )
+
+    assert result.ok, result.detail
+    # Every local change survives exactly as it was.
+    assert (target / "function.py").read_text() == "locally modified\n"
+    assert (tmp_path / "scratch.txt").read_text() == "work in progress\n"
+    assert git("rev-parse", "--abbrev-ref", "HEAD") == "main"
+    assert git("show", "console/edit:functions/duration_rms/function.py") == "from the console"
+
+
+def test_saving_identical_content_is_refused(monkeypatch, tmp_path):
+    """An empty commit is noise in a branch list and a PR nobody can review."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    target = tmp_path / "functions" / "duration_rms"
+    target.mkdir(parents=True)
+    (target / "function.py").write_text("original\n")
+    git("add", "-A")
+    git("commit", "-m", "initial")
+
+    monkeypatch.setattr(actions, "ALLOW_WRITES", True)
+    monkeypatch.setattr(actions, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(actions, "REPO_DIR", tmp_path)
+
+    result = actions.save_to_branch(
+        relative_path="functions/duration_rms/function.py",
+        content="original\n",
+        message="No-op",
+    )
+
+    assert not result.ok
+    assert "nothing changed" in result.message
 
 
 # -- payload rendering -----------------------------------------------------

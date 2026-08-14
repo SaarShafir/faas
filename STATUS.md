@@ -145,6 +145,11 @@ function SIGKILLed and a hydrator SIGTERMed mid-flight.
 - **The console** (`:8000`) — read-only, and the half Grafana is bad at: trace one
   `call_id` through its whole life, browse the DLQ's *contents* rather than its
   rate, see which declarations exist and whether they agree with the topics.
+- **The console can act, behind two flags.** A sandbox that runs a function
+  against real corpus audio (arbitrary code execution, off by default), and
+  write actions — replay, pause, and committing edits to a branch — audited
+  before the fact. Edits use git plumbing so the working tree and HEAD are never
+  touched, and nothing reaches a running pod.
 - **Per-call events** — the SDK emits one event per lifecycle transition over
   OTLP; a collector puts them in OpenSearch, and the console reads them. The
   collector is the swap point: replacing OpenSearch is an exporter change in

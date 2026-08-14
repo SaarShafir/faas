@@ -34,7 +34,7 @@ python -m stress.chaos --service hydrator --signal SIGTERM
 
 | | |
 |---|---|
-| Console | <http://localhost:8000> — trace a call, browse the DLQ, config lint |
+| Console | <http://localhost:8000> — trace calls, live feed, per-function pages |
 | Grafana | <http://localhost:3000> — fleet and per-function dashboards |
 | Prometheus | <http://localhost:9090> — targets, rules, raw queries |
 | OpenSearch | <http://localhost:9200> — the raw events, one per call transition |
@@ -60,6 +60,31 @@ because whatever is odd about a real recording is the reason it is worth having.
 docker compose run --rm corpus
 docker compose restart audio-api
 ```
+
+## What the console can do to things
+
+Two powers, both **off by default** and both on in `.env` because this is a
+laptop stack. The console has **no authentication**: anyone who can reach port
+8000 gets whatever is switched on.
+
+| | |
+|---|---|
+| `CONSOLE_SANDBOX` | Run a function — edited in the browser or as committed — against real corpus audio. This executes arbitrary Python in the console container. |
+| `CONSOLE_ALLOW_WRITES` | Replay a dead letter, pause/resume a function, and commit edits to a branch. Pause needs the Docker socket, which is equivalent to root on the host. |
+
+Every write is appended to `runs/console-audit.jsonl` **before** it runs, so an
+action that hangs or crashes still leaves a trace.
+
+**Edits never reach a running pod.** Saving commits to a new branch using git
+plumbing — the working tree and HEAD are untouched, so it is safe to use against
+a checkout with uncommitted work. Push the branch and open a PR; the pods keep
+running the image they were built from until a merged change is rolled out.
+That is what keeps §8's "one PR, zero infra tickets" literally true.
+
+**Pause is local-stack mechanics.** Kafka has no server-side pause; a group is
+only paused in the sense that nobody is polling it. Here that means stopping the
+container. On OpenShift the honest equivalent is scaling the deployment to zero
+through the API server with a scoped service account.
 
 ## Knobs
 
