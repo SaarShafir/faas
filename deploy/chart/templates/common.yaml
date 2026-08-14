@@ -20,20 +20,7 @@ metadata:
 data:
   {{- range $function := .Values.functions }}
   {{ $function.id }}.yaml: |
-    function_id: {{ $function.id }}
-    function_version: {{ $function.version | quote }}
-    image: {{ $function.image }}
-    in_flight: {{ $function.inFlight }}
-    per_file_timeout_seconds: {{ $function.perFileTimeoutSeconds }}
-    retry_budget: {{ $function.retryBudget }}
-    dlq_topic: {{ $function.dlqTopic }}
-    {{- with $function.inputTopic }}
-    input_topic: {{ . }}
-    {{- end }}
-    {{- with $function.resultsTopic }}
-    results_topic: {{ . }}
-    {{- end }}
-    results_topic_partitions: {{ $function.resultsTopicPartitions }}
+    {{- $function.declaration | toYaml | nindent 4 }}
   {{- end }}
 {{- if .Values.monitoring.serviceMonitor }}
 {{- range $function := .Values.functions }}

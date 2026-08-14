@@ -212,7 +212,9 @@ A Helm chart whose per-function values are **generated** from the declarations
 by `scripts/generate_values.py`, and one image per function built by
 `scripts/build_images.py` from the tags the declarations name. Neither is
 tidiness: §8's "one PR, zero infra tickets" ends at the first hand-written
-Deployment or hand-typed image tag. See [`deploy/README.md`](deploy/README.md).
+Deployment or hand-typed image tag. [`deploy/AGENT_GUIDE.md`](deploy/AGENT_GUIDE.md)
+is the step-by-step procedure; [`deploy/README.md`](deploy/README.md) is the
+reference.
 
 Three things the SDK gained for it:
 

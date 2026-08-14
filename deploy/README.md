@@ -2,6 +2,11 @@
 
 Eleven consumer groups — the hydrator and ten functions — plus the console.
 
+**Deploying it for the first time, or handing it to an agent?** Read
+[`AGENT_GUIDE.md`](AGENT_GUIDE.md) instead: same material, ordered as a
+procedure, with the verification steps and failure modes spelled out. This file
+is the reference.
+
 **Nothing here is written per function.** `deploy/chart/values-functions.yaml` is
 generated from the declarations in `functions/`, and the chart turns each entry
 into a Deployment, Service, ServiceMonitor and PDB. That is not tidiness: §8

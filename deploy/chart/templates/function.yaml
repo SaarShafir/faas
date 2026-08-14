@@ -76,6 +76,13 @@ spec:
             - name: metrics
               containerPort: 9108
           env:
+            # The mounted declaration, not the one baked into the image. Without
+            # this the ConfigMap is decorative: pods would keep running the
+            # timeout and retry budget frozen at build time, so changing one in
+            # git would need an image rebuild and the checksum annotation below
+            # would restart pods to no effect.
+            - name: FAAS_DECLARATION
+              value: /app/declaration/{{ $function.id }}.yaml
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: {{ $.Values.kafka.bootstrapServers | quote }}
             - name: FAAS_METRICS

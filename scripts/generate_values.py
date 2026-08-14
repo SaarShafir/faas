@@ -81,6 +81,13 @@ def collect() -> list[dict]:
         if data.get("results_topic"):
             entry["resultsTopic"] = data["results_topic"]
 
+        # The declaration verbatim, for the ConfigMap the pods actually read.
+        # Copying field by field here would silently drop anything not listed
+        # above -- flaky_analyzer's retry_backoff_seconds went missing exactly
+        # that way -- and the pod would then run with a different configuration
+        # from the one in git while both looked correct.
+        entry["declaration"] = data
+
         functions.append(entry)
 
     return functions

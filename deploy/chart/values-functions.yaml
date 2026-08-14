@@ -22,6 +22,19 @@ functions:
     memory: 2Gi
   inputTopic: faas.calls.raw
   resultsTopic: faas.audio.internal
+  declaration:
+    function_id: hydrator
+    function_version: 1.0.0
+    image: registry/faas-hydrator:1.0.0
+    input_topic: faas.calls.raw
+    results_topic: faas.audio.internal
+    resources:
+      cpu: 2
+      memory: 2Gi
+    in_flight: 4
+    per_file_timeout_seconds: 120
+    retry_budget: 3
+    dlq_topic: faas.dlq.hydrator
 - id: clipping_detect
   name: clipping-detect
   version: 1.0.0
@@ -35,6 +48,17 @@ functions:
   resources:
     cpu: 1
     memory: 512Mi
+  declaration:
+    function_id: clipping_detect
+    function_version: 1.0.0
+    image: registry/faas-clipping-detect:1.0.0
+    resources:
+      cpu: 1
+      memory: 512Mi
+    in_flight: 2
+    per_file_timeout_seconds: 30
+    retry_budget: 3
+    dlq_topic: faas.dlq.clipping_detect
 - id: duration_rms
   name: duration-rms
   version: 1.0.0
@@ -48,6 +72,18 @@ functions:
   resources:
     cpu: 1
     memory: 512Mi
+  declaration:
+    function_id: duration_rms
+    function_version: 1.0.0
+    image: registry/faas-duration-rms:1.0.0
+    resources:
+      cpu: 1
+      memory: 512Mi
+    in_flight: 2
+    per_file_timeout_seconds: 30
+    retry_budget: 3
+    dlq_topic: faas.dlq.duration_rms
+    payload_schema: schemas/duration_rms/v1.json
 - id: energy_vad
   name: energy-vad
   version: 1.0.0
@@ -61,6 +97,17 @@ functions:
   resources:
     cpu: 1
     memory: 512Mi
+  declaration:
+    function_id: energy_vad
+    function_version: 1.0.0
+    image: registry/faas-energy-vad:1.0.0
+    resources:
+      cpu: 1
+      memory: 512Mi
+    in_flight: 2
+    per_file_timeout_seconds: 30
+    retry_budget: 3
+    dlq_topic: faas.dlq.energy_vad
 - id: flaky_analyzer
   name: flaky-analyzer
   version: 1.0.0
@@ -74,6 +121,19 @@ functions:
   resources:
     cpu: 1
     memory: 512Mi
+  declaration:
+    function_id: flaky_analyzer
+    function_version: 1.0.0
+    image: registry/faas-flaky-analyzer:1.0.0
+    resources:
+      cpu: 1
+      memory: 512Mi
+    in_flight: 2
+    per_file_timeout_seconds: 30
+    retry_budget: 3
+    retry_backoff_seconds: 0.5
+    retry_backoff_max_seconds: 5
+    dlq_topic: faas.dlq.flaky_analyzer
 - id: silence_ratio
   name: silence-ratio
   version: 1.0.0
@@ -87,6 +147,17 @@ functions:
   resources:
     cpu: 1
     memory: 512Mi
+  declaration:
+    function_id: silence_ratio
+    function_version: 1.0.0
+    image: registry/faas-silence-ratio:1.0.0
+    resources:
+      cpu: 1
+      memory: 512Mi
+    in_flight: 2
+    per_file_timeout_seconds: 30
+    retry_budget: 3
+    dlq_topic: faas.dlq.silence_ratio
 - id: slow_burner
   name: slow-burner
   version: 1.0.0
@@ -100,6 +171,17 @@ functions:
   resources:
     cpu: 1
     memory: 512Mi
+  declaration:
+    function_id: slow_burner
+    function_version: 1.0.0
+    image: registry/faas-slow-burner:1.0.0
+    resources:
+      cpu: 1
+      memory: 512Mi
+    in_flight: 2
+    per_file_timeout_seconds: 15
+    retry_budget: 2
+    dlq_topic: faas.dlq.slow_burner
 - id: snr_estimate
   name: snr-estimate
   version: 1.0.0
@@ -113,6 +195,17 @@ functions:
   resources:
     cpu: 1
     memory: 512Mi
+  declaration:
+    function_id: snr_estimate
+    function_version: 1.0.0
+    image: registry/faas-snr-estimate:1.0.0
+    resources:
+      cpu: 1
+      memory: 512Mi
+    in_flight: 2
+    per_file_timeout_seconds: 30
+    retry_budget: 3
+    dlq_topic: faas.dlq.snr_estimate
 - id: spectral_centroid
   name: spectral-centroid
   version: 1.0.0
@@ -126,6 +219,17 @@ functions:
   resources:
     cpu: 2
     memory: 1Gi
+  declaration:
+    function_id: spectral_centroid
+    function_version: 1.0.0
+    image: registry/faas-spectral-centroid:1.0.0
+    resources:
+      cpu: 2
+      memory: 1Gi
+    in_flight: 2
+    per_file_timeout_seconds: 60
+    retry_budget: 3
+    dlq_topic: faas.dlq.spectral_centroid
 - id: spectral_rolloff
   name: spectral-rolloff
   version: 1.0.0
@@ -139,6 +243,17 @@ functions:
   resources:
     cpu: 2
     memory: 1Gi
+  declaration:
+    function_id: spectral_rolloff
+    function_version: 1.0.0
+    image: registry/faas-spectral-rolloff:1.0.0
+    resources:
+      cpu: 2
+      memory: 1Gi
+    in_flight: 2
+    per_file_timeout_seconds: 60
+    retry_budget: 3
+    dlq_topic: faas.dlq.spectral_rolloff
 - id: zero_crossing_rate
   name: zero-crossing-rate
   version: 1.0.0
@@ -152,3 +267,14 @@ functions:
   resources:
     cpu: 1
     memory: 256Mi
+  declaration:
+    function_id: zero_crossing_rate
+    function_version: 1.0.0
+    image: registry/faas-zero-crossing-rate:1.0.0
+    resources:
+      cpu: 1
+      memory: 256Mi
+    in_flight: 2
+    per_file_timeout_seconds: 20
+    retry_budget: 3
+    dlq_topic: faas.dlq.zero_crossing_rate
