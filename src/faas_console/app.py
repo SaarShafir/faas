@@ -44,6 +44,12 @@ app = FastAPI(title="FaaS console", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(HERE, "templates"))
 
+# Templates render payloads inline rather than dumping bytes, so the renderer
+# has to be reachable from any page that shows a result.
+from . import payloads as _payloads  # noqa: E402
+
+templates.env.globals["render_payload"] = _payloads.render
+
 _reader: KafkaConsoleReader | None = None
 
 
@@ -75,10 +81,21 @@ def get_reader() -> KafkaConsoleReader:
 
 
 def _page(request: Request, template: str, **context):
+    from . import sandbox
+    from .actions import ALLOW_WRITES
+
     return templates.TemplateResponse(
         request=request,
         name=template,
-        context={"grafana": GRAFANA_URL, **context},
+        context={
+            "grafana": GRAFANA_URL,
+            # Every page says whether it can change anything, because the same
+            # console is read-only or not depending on how it was started, and
+            # guessing from the buttons present is not good enough.
+            "writes_enabled": ALLOW_WRITES,
+            "sandbox_enabled": sandbox.ENABLED,
+            **context,
+        },
     )
 
 
@@ -211,3 +228,187 @@ def api_lint():
         "ok": not any(f.severity == "error" for f in findings),
         "findings": [vars(f) for f in findings],
     }
+
+
+# -- function detail, editor and sandbox -----------------------------------
+
+
+@app.get("/function/{function_id}", response_class=HTMLResponse)
+def function_detail(request: Request, function_id: str):
+    from . import payloads, sandbox
+    from .actions import ALLOW_WRITES
+
+    reader = get_reader()
+    config = reader.declarations.get(function_id)
+    if config is None:
+        return _page(request, "function.html", function_id=function_id, config=None)
+
+    recent = []
+    if hasattr(reader, "recent_for_function"):
+        recent = reader.recent_for_function(function_id, limit=10)
+
+    return _page(
+        request,
+        "function.html",
+        function_id=function_id,
+        config=config,
+        source=declarations_module.source_code(function_id),
+        declaration_text=_declaration_text(function_id),
+        recent=recent,
+        renderings=[(r, payloads.render(function_id, r.get("payload"))) for r in recent],
+        audio=sandbox.available_audio(),
+        sandbox_enabled=sandbox.ENABLED,
+        writes_enabled=ALLOW_WRITES,
+    )
+
+
+def _declaration_text(function_id: str) -> str:
+    path = declarations_module.source_path(function_id)
+    return path.read_text(encoding="utf-8") if path else ""
+
+
+@app.post("/api/function/{function_id}/run")
+async def api_run(function_id: str, request: Request):
+    """Run source against one corpus file and return what it produced.
+
+    The source is whatever is in the editor, which is the point: this is the
+    loop between changing a line and seeing its effect on real audio, and it
+    deploys nothing.
+    """
+    from . import sandbox
+
+    body = await request.json()
+    source = body.get("source") or declarations_module.source_code(function_id)
+    audio_id = body.get("audio_id", "")
+
+    try:
+        result = sandbox.run(source, audio_id)
+    except sandbox.SandboxDisabled as exc:
+        return Response(
+            content=_jsonable({"ok": False, "error": str(exc)}),
+            media_type="application/json",
+            status_code=403,
+        )
+
+    from . import payloads
+
+    rendering = payloads.render(function_id, result.payload) if result.payload else None
+    return Response(
+        content=_jsonable(
+            {
+                "ok": result.ok,
+                "status": result.status,
+                "payload": result.payload,
+                "seconds": round(result.seconds, 3),
+                "audio_seconds": round(result.audio_seconds, 1),
+                "realtime_multiple": result.realtime_multiple,
+                "meets_floor": (result.realtime_multiple or 0) >= 25,
+                "error": result.error,
+                "stdout": result.stdout,
+                "figures": [vars(f) for f in (rendering.figures if rendering else [])],
+                "headline": rendering.headline if rendering else "",
+            }
+        ),
+        media_type="application/json",
+    )
+
+
+@app.post("/api/function/{function_id}/save")
+async def api_save(function_id: str, request: Request):
+    """Commit an edit to a branch. Never to the working branch, never to a pod."""
+    from . import actions
+
+    body = await request.json()
+    kind = body.get("kind", "function.py")
+    if kind not in ("function.py", "function.yaml"):
+        return Response(
+            content=_jsonable({"ok": False, "message": f"cannot edit {kind}"}),
+            media_type="application/json",
+            status_code=400,
+        )
+
+    try:
+        result = actions.save_to_branch(
+            relative_path=declarations_module.relative_source_path(function_id, kind),
+            content=body.get("content", ""),
+            message=body.get("message") or f"Console edit: {function_id} {kind}",
+        )
+    except actions.WritesDisabled as exc:
+        return Response(
+            content=_jsonable({"ok": False, "message": str(exc)}),
+            media_type="application/json",
+            status_code=403,
+        )
+
+    return Response(content=_jsonable(vars(result)), media_type="application/json")
+
+
+@app.post("/api/function/{function_id}/{action}")
+def api_pause(function_id: str, action: str):
+    from . import actions
+
+    if action not in ("pause", "resume"):
+        return Response(
+            content=_jsonable({"ok": False, "message": "unknown action"}),
+            media_type="application/json",
+            status_code=404,
+        )
+    try:
+        result = actions.pause_function(function_id, resume=(action == "resume"))
+    except actions.WritesDisabled as exc:
+        return Response(
+            content=_jsonable({"ok": False, "message": str(exc)}),
+            media_type="application/json",
+            status_code=403,
+        )
+    return Response(content=_jsonable(vars(result)), media_type="application/json")
+
+
+@app.post("/api/dlq/replay")
+async def api_replay(request: Request):
+    from . import actions
+
+    body = await request.json()
+    try:
+        result = actions.replay_dead_letter(
+            bootstrap=os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"),
+            dlq_topic=body.get("topic", ""),
+            partition=int(body.get("partition", -1)),
+            offset=int(body.get("offset", -1)),
+        )
+    except actions.WritesDisabled as exc:
+        return Response(
+            content=_jsonable({"ok": False, "message": str(exc)}),
+            media_type="application/json",
+            status_code=403,
+        )
+    return Response(content=_jsonable(vars(result)), media_type="application/json")
+
+
+# -- live tail -------------------------------------------------------------
+
+
+@app.get("/tail", response_class=HTMLResponse)
+def tail(request: Request):
+    from . import sandbox
+    from .actions import ALLOW_WRITES, recent_audit
+
+    return _page(
+        request,
+        "tail.html",
+        sandbox_enabled=sandbox.ENABLED,
+        writes_enabled=ALLOW_WRITES,
+        audit=recent_audit(10),
+    )
+
+
+@app.get("/api/recent")
+def api_recent(limit: int = 40, since: str = ""):
+    """Calls as they finish, newest first. Polled by the tail page."""
+    reader = get_reader()
+    if not hasattr(reader, "recent_events"):
+        return {"events": [], "note": "live tail needs the event log; set FAAS_EVENTS_URL"}
+    return Response(
+        content=_jsonable({"events": reader.recent_events(limit=limit, since=since)}),
+        media_type="application/json",
+    )

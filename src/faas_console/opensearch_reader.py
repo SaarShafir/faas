@@ -250,6 +250,79 @@ class OpenSearchConsoleReader:
         )
         return [_dead_letter(self._attributes(hit)) for hit in hits]
 
+    # -- feeds -------------------------------------------------------------
+
+    def recent_events(self, limit: int = 40, since: str = "") -> list[dict]:
+        """Completed and dead-lettered calls, newest first.
+
+        Only terminal events: `call.received` doubles the volume and says
+        nothing a completion does not say better. `since` is the last
+        timestamp the caller saw, so a poll returns only what is new.
+        """
+        must: list[dict[str, Any]] = [
+            {
+                "terms": {
+                    "attributes.event.name.keyword": [COMPLETED, DEAD_LETTERED],
+                }
+            }
+        ]
+        if since:
+            must.append({"range": {"@timestamp": {"gt": since}}})
+
+        hits = self._search(
+            {
+                "size": limit,
+                "sort": [{"@timestamp": "desc"}],
+                "query": {"bool": {"must": must}},
+            }
+        )
+        out = []
+        for hit in hits:
+            event = self._attributes(hit)
+            out.append(
+                {
+                    "at": event.get("@timestamp", ""),
+                    "event": event.get("event_name", ""),
+                    "call_id": event.get("call_id", ""),
+                    "function_id": event.get("function_id", ""),
+                    "status": event.get("status", ""),
+                    "attempt": event.get("attempt", 1),
+                    "error_code": event.get("error_code", ""),
+                    "process_seconds": event.get("process_seconds"),
+                }
+            )
+        return out
+
+    def recent_for_function(self, function_id: str, limit: int = 10) -> list[dict]:
+        """The last few calls this function answered, payloads included, so the
+        function page shows what it is actually producing rather than what its
+        code suggests it should."""
+        hits = self._search(
+            {
+                "size": limit,
+                "sort": [{"@timestamp": "desc"}],
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"term": {"attributes.function_id.keyword": function_id}},
+                            {"term": {"attributes.event.name.keyword": COMPLETED}},
+                        ]
+                    }
+                },
+            }
+        )
+        return [
+            {
+                "at": e.get("@timestamp", ""),
+                "call_id": e.get("call_id", ""),
+                "status": e.get("status", ""),
+                "payload": e.get("payload", ""),
+                "process_seconds": e.get("process_seconds"),
+                "duration_seconds": e.get("duration_seconds"),
+            }
+            for e in (self._attributes(hit) for hit in hits)
+        ]
+
 
 def _dead_letter(event: dict) -> DeadLetter:
     return DeadLetter(

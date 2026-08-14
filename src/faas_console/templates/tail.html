@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Live &middot; FaaS console{% endblock %}
+
+{% block content %}
+<h1>Live</h1>
+
+<p class="hint">
+  Calls as they finish, newest first. Only terminal events &mdash; a completion or
+  a dead letter &mdash; because <code>call.received</code> doubles the volume and
+  says nothing a completion does not say better.
+</p>
+
+<div class="search">
+  <button type="button" id="toggle" onclick="toggleFeed()">Pause feed</button>
+  <span class="subtle" id="feed-status">connecting...</span>
+</div>
+
+<table>
+  <thead>
+    <tr><th>When</th><th>Function</th><th>Call</th><th>Status</th><th class="num">Attempt</th><th class="num">Time</th></tr>
+  </thead>
+  <tbody id="feed"></tbody>
+</table>
+
+{% if audit %}
+  <section>
+    <h2>Recent console actions</h2>
+    <p class="hint">
+      Every write is recorded before it runs, including the ones that fail.
+      There is no authentication yet, which is why the actor reads as anonymous
+      &mdash; and why this must not be exposed as-is.
+    </p>
+    <table>
+      <thead><tr><th>When</th><th>Action</th><th>Detail</th><th>Actor</th></tr></thead>
+      <tbody>
+        {% for entry in audit %}
+          <tr>
+            <td class="subtle">{{ entry.at[:19] }}</td>
+            <td><span class="badge">{{ entry.action }}</span></td>
+            <td class="subtle">
+              {%- for key, value in entry.items() -%}
+                {%- if key not in ("at", "action", "actor") %}{{ key }}={{ value }} {% endif -%}
+              {%- endfor -%}
+            </td>
+            <td class="subtle">{{ entry.actor }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endif %}
+
+<script>
+let since = '';
+let running = true;
+let timer = null;
+
+function row(event) {
+  const failed = event.event === 'call.dead_lettered' || event.status === 'FAILED';
+  const skipped = event.status === 'SKIPPED';
+  const label = failed ? (event.error_code || 'DEAD LETTER') : (event.status || '');
+  const tone = failed ? 'error' : (skipped ? 'warning' : 'good');
+  const seconds = event.process_seconds ? Number(event.process_seconds).toFixed(2) + 's' : '';
+  return `<tr class="${failed ? 'row-bad' : ''}">
+    <td class="subtle">${(event.at || '').slice(11, 19)}</td>
+    <td><a href="/function/${event.function_id}"><code>${event.function_id}</code></a></td>
+    <td><a href="/call?call_id=${event.call_id}"><code>${(event.call_id || '').slice(-14)}</code></a></td>
+    <td><span class="badge ${tone}">${label}</span></td>
+    <td class="num ${event.attempt > 1 ? 'warn' : ''}">${event.attempt || ''}</td>
+    <td class="num">${seconds}</td>
+  </tr>`;
+}
+
+async function poll() {
+  if (!running) return;
+  try {
+    const response = await fetch('/api/recent?limit=40' + (since ? '&since=' + encodeURIComponent(since) : ''));
+    const data = await response.json();
+    const events = data.events || [];
+    const status = document.getElementById('feed-status');
+
+    if (data.note) {
+      status.textContent = data.note;
+      return;
+    }
+    if (events.length) {
+      // The API returns newest first; prepend so the newest stays on top.
+      since = events[0].at;
+      const body = document.getElementById('feed');
+      body.insertAdjacentHTML('afterbegin', events.map(row).join(''));
+      // Unbounded growth in a tab left open all afternoon is a memory leak.
+      while (body.rows.length > 300) body.deleteRow(body.rows.length - 1);
+    }
+    status.textContent = 'live';
+  } catch (err) {
+    document.getElementById('feed-status').textContent = 'reconnecting...';
+  }
+}
+
+function toggleFeed() {
+  running = !running;
+  document.getElementById('toggle').textContent = running ? 'Pause feed' : 'Resume feed';
+  document.getElementById('feed-status').textContent = running ? 'live' : 'paused';
+  if (running) poll();
+}
+
+poll();
+timer = setInterval(poll, 2000);
+</script>
+{% endblock %}

@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}{{ function_id }} &middot; FaaS console{% endblock %}
+
+{% block content %}
+{% if not config %}
+  <h1>{{ function_id }}</h1>
+  <p class="empty">No declaration for this function. It may be running without one &mdash; see the overview.</p>
+{% else %}
+
+<h1>{{ function_id }} <span class="subtle">{{ config.function_version }}</span></h1>
+
+<section class="summary">
+  <div class="stat"><span class="label">In flight</span><span class="value">{{ config.in_flight }}</span></div>
+  <div class="stat"><span class="label">Timeout</span><span class="value">{{ config.per_file_timeout_seconds }}s</span></div>
+  <div class="stat"><span class="label">Retries</span><span class="value">{{ config.retry_budget }}</span></div>
+  <div class="stat"><span class="label">DLQ</span><span class="value" style="font-size:.9rem">
+    <a href="/dlq?topic={{ config.dlq_topic }}">{{ config.dlq_topic }}</a></span></div>
+</section>
+
+<p class="hint">
+  <a href="{{ grafana }}/d/faas-function?var-function={{ function_id }}" target="_blank" rel="noreferrer">
+    Latency, throughput and realtime multiple in Grafana &rarr;</a>
+</p>
+
+{% if writes_enabled %}
+  <section>
+    <h2>Run state</h2>
+    <p class="hint">
+      Pausing stops this function's containers. Its lag grows and every other
+      function is unaffected &mdash; the isolation guarantee doing its job. This is
+      local-stack mechanics: on OpenShift the equivalent is scaling the
+      deployment to zero.
+    </p>
+    <div class="search">
+      <button type="button" onclick="act('/api/function/{{ function_id }}/pause')">Pause</button>
+      <button type="button" onclick="act('/api/function/{{ function_id }}/resume')">Resume</button>
+    </div>
+    <p id="act-result" class="hint"></p>
+  </section>
+{% endif %}
+
+<!-- -- the editor ---------------------------------------------------- -->
+
+<section>
+  <h2>Business logic</h2>
+  <p class="hint">
+    <code>functions/{{ function_id }}/function.py</code>, as it exists in git.
+    {% if sandbox_enabled %}
+      Edit it and run it against real corpus audio &mdash; the run happens here and
+      deploys nothing.
+    {% endif %}
+    {% if writes_enabled %}
+      Saving commits to a <strong>new branch</strong>; the running pods keep
+      executing the image they were built from until a merged change is built
+      and rolled out. That is what keeps §8's one-PR claim true.
+    {% endif %}
+  </p>
+
+  <textarea id="source" spellcheck="false">{{ source }}</textarea>
+
+  <div class="editor-bar">
+    {% if sandbox_enabled %}
+      <select id="audio">
+        {% for entry in audio %}
+          <option value="{{ entry.audio_id }}">{{ entry.audio_id }} &mdash; {{ entry.description[:60] }}</option>
+        {% endfor %}
+      </select>
+      <button type="button" onclick="runFunction()">Run against this audio</button>
+    {% else %}
+      <span class="subtle">
+        The sandbox is off. It executes arbitrary Python behind an HTTP request,
+        so it is opt-in: <code>FAAS_CONSOLE_SANDBOX=1</code>.
+      </span>
+    {% endif %}
+    {% if writes_enabled %}
+      <button type="button" class="secondary" onclick="saveSource()">Commit to a branch</button>
+    {% endif %}
+  </div>
+
+  <div id="run-result"></div>
+</section>
+
+{% if writes_enabled %}
+  <section>
+    <h2>Declaration</h2>
+    <p class="hint">
+      The tuning knobs &mdash; timeout, retry budget, in-flight depth. These are the
+      values most likely to need changing in response to something on a
+      dashboard, and they ship the same way the code does.
+    </p>
+    <textarea id="declaration" spellcheck="false" style="min-height:14rem">{{ declaration_text }}</textarea>
+    <div class="editor-bar">
+      <button type="button" class="secondary" onclick="saveDeclaration()">Commit to a branch</button>
+    </div>
+  </section>
+{% endif %}
+
+<!-- -- what it is actually producing --------------------------------- -->
+
+<section>
+  <h2>Recent output</h2>
+  {% if renderings %}
+    <p class="hint">The last few calls this function answered, rendered from the event log.</p>
+    {% for record, rendering in renderings %}
+      <div class="payload-card">
+        <div class="payload-head">
+          <a href="/call?call_id={{ record.call_id }}"><code>{{ record.call_id }}</code></a>
+          <span class="subtle">{{ record.at[:19] }}</span>
+          {% if record.process_seconds %}<span class="subtle">{{ "%.2f"|format(record.process_seconds) }}s</span>{% endif %}
+          <strong>{{ rendering.headline }}</strong>
+        </div>
+        {% include "_figures.html" %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">No recent calls for this function in the event log.</p>
+  {% endif %}
+</section>
+
+<script>
+async function post(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {})
+  });
+  return response.json();
+}
+
+async function act(url) {
+  const out = document.getElementById('act-result');
+  out.textContent = 'working...';
+  const data = await post(url);
+  out.textContent = (data.ok ? '' : 'failed: ') + (data.message || '') + ' ' + (data.detail || '');
+}
+
+async function runFunction() {
+  const out = document.getElementById('run-result');
+  out.innerHTML = '<p class="hint">running...</p>';
+  const data = await post('/api/function/{{ function_id }}/run', {
+    source: document.getElementById('source').value,
+    audio_id: document.getElementById('audio').value
+  });
+
+  if (!data.ok) {
+    out.innerHTML = '<pre class="run-error"></pre>';
+    out.querySelector('pre').textContent = (data.error || 'failed') + (data.stdout ? '\n\n' + data.stdout : '');
+    return;
+  }
+
+  const floor = data.realtime_multiple
+    ? `<span class="badge ${data.meets_floor ? 'good' : 'error'}">${data.realtime_multiple.toFixed(0)}x realtime</span>`
+    : '';
+  const figures = (data.figures || []).map(f => `
+    <div class="figure">
+      <span class="figure-label">${f.label}</span>
+      <span class="figure-value ${f.tone || ''}">${f.value}</span>
+      ${f.fraction !== null && f.fraction !== undefined
+        ? `<span class="figure-bar"><i style="width:${Math.max(0, Math.min(1, f.fraction)) * 100}%"></i></span>` : ''}
+      ${f.note ? `<span class="figure-note">${f.note}</span>` : ''}
+    </div>`).join('');
+
+  out.innerHTML = `
+    <div class="payload-card">
+      <div class="payload-head">
+        <span class="badge status-${(data.status || '').toLowerCase()}">${data.status}</span>
+        <strong>${data.headline || ''}</strong>
+        <span class="subtle">${data.seconds}s for ${data.audio_seconds}s of audio</span>
+        ${floor}
+      </div>
+      <div class="figures">${figures}</div>
+      <details><summary>payload</summary><pre>${(data.payload || '').replace(/</g, '&lt;')}</pre></details>
+    </div>`;
+}
+
+async function saveSource() {
+  const message = prompt('Commit message', 'Console edit: {{ function_id }} business logic');
+  if (!message) return;
+  const data = await post('/api/function/{{ function_id }}/save', {
+    kind: 'function.py',
+    content: document.getElementById('source').value,
+    message: message
+  });
+  alert((data.message || '') + '\n\n' + (data.detail || ''));
+}
+
+async function saveDeclaration() {
+  const message = prompt('Commit message', 'Console edit: {{ function_id }} declaration');
+  if (!message) return;
+  const data = await post('/api/function/{{ function_id }}/save', {
+    kind: 'function.yaml',
+    content: document.getElementById('declaration').value,
+    message: message
+  });
+  alert((data.message || '') + '\n\n' + (data.detail || ''));
+}
+</script>
+{% endif %}
+{% endblock %}

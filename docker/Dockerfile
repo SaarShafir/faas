@@ -93,7 +93,16 @@ CMD ["faas-hydrator"]
 FROM base AS console
 
 USER root
-RUN pip install --no-cache-dir ".[console]"
+# git commits edits to a branch; the docker CLI is only used by pause/resume,
+# which stops containers in the local stack. Neither is a production pattern --
+# on OpenShift the equivalent of pause is scaling a deployment to zero through
+# the API server with a scoped service account.
+# ffmpeg because the sandbox transcodes corpus audio to canonical FLAC exactly
+# as the hydrator does -- feeding a function anything else would make the
+# console's answer differ from the platform's, which is the one thing it must
+# not do.
+RUN apt-get update     && apt-get install -y --no-install-recommends git docker.io ffmpeg     && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir ".[console,hydrator]"
 USER 1001:0
 
 COPY hydrator.yaml ./hydrator.yaml

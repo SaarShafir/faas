@@ -1,0 +1,27 @@
+{# One rendered payload. Additive: the raw JSON is always one click away, because
+   a visualisation that quietly disagreed with the data would be worse than none. #}
+<div class="figures">
+  {% for figure in rendering.figures %}
+    <div class="figure">
+      <span class="figure-label">{{ figure.label }}</span>
+      <span class="figure-value {{ figure.tone }}">{{ figure.value }}</span>
+      {% if figure.fraction is not none %}
+        <span class="figure-bar"><i style="width: {{ (figure.fraction * 100) | round(1) }}%"></i></span>
+      {% endif %}
+      {% if figure.note %}<span class="figure-note">{{ figure.note }}</span>{% endif %}
+    </div>
+  {% endfor %}
+</div>
+
+{% if rendering.timeline %}
+  <div class="timeline" title="{{ rendering.timeline_caption }}">
+    {% for start, width, kind in rendering.timeline %}
+      <i class="{{ kind }}" style="left: {{ (start * 100) | round(2) }}%; width: {{ (width * 100) | round(2) }}%"></i>
+    {% endfor %}
+  </div>
+  <p class="subtle">{{ rendering.timeline_caption }}</p>
+{% endif %}
+
+{% if rendering.raw %}
+  <details><summary>payload</summary><pre>{{ rendering.raw }}</pre></details>
+{% endif %}

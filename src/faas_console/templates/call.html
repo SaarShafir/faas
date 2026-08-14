@@ -87,7 +87,7 @@
           {% for result in trace.results %}
             <tr>
               <td>
-                <code>{{ result.function_id }}</code>
+                <a href="/function/{{ result.function_id }}"><code>{{ result.function_id }}</code></a>
                 <span class="subtle">{{ result.function_version }}</span>
               </td>
               <td><span class="badge status-{{ result.status | lower }}">{{ result.status }}</span></td>
@@ -103,10 +103,9 @@
                     s3: <code>{{ result.payload_ref }}</code>
                   </span>
                 {% elif result.payload %}
-                  <details>
-                    <summary>{{ result.payload | length }} bytes</summary>
-                    <pre>{{ result.payload.decode("utf-8", "replace") }}</pre>
-                  </details>
+                  {% set rendering = render_payload(result.function_id, result.payload) %}
+                  <strong class="subtle">{{ rendering.headline }}</strong>
+                  {% include "_figures.html" %}
                 {% else %}
                   <span class="subtle">—</span>
                 {% endif %}

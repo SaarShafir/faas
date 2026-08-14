@@ -14,6 +14,7 @@
     <nav>
       <a class="brand" href="/">FaaS <span>console</span></a>
       <a href="/">Overview</a>
+      <a href="/tail">Live</a>
       <a href="/call">Trace a call</a>
       <a href="/dlq">Dead letters</a>
       <a href="/registry">Registry</a>
@@ -21,10 +22,25 @@
         Metrics &rarr;
       </a>
     </nav>
-    <p class="readonly" title="Every runtime action needs auth and an audit trail first, and declarations belong to git (§8).">read-only</p>
+    {% if writes_enabled or sandbox_enabled %}
+      <p class="readonly" style="color: var(--warn); border-color: var(--warn)"
+         title="This console can change things and has no authentication.">
+        {% if writes_enabled %}writes on{% else %}sandbox on{% endif %}
+      </p>
+    {% else %}
+      <p class="readonly" title="Every runtime action needs auth and an audit trail first, and declarations belong to git (§8).">read-only</p>
+    {% endif %}
   </header>
 
   <main>
+    {% if writes_enabled or sandbox_enabled %}
+      <p class="writes-on">
+        {% if sandbox_enabled %}The sandbox executes arbitrary Python behind an HTTP request.{% endif %}
+        {% if writes_enabled %}Replay, pause and commit are enabled.{% endif %}
+        There is no authentication here &mdash; anyone who can reach this page has
+        these powers. Fine on a laptop, never on anything shared.
+      </p>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 

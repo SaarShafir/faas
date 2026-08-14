@@ -65,3 +65,21 @@ def source_path(function_id: str, functions_dir: Path | None = None) -> Path | N
     functions_dir = Path(functions_dir or FUNCTIONS_DIR)
     candidate = functions_dir / function_id / "function.yaml"
     return candidate if candidate.exists() else None
+
+
+def source_code(function_id: str, functions_dir: Path | None = None) -> str:
+    """A function's business logic, as it exists in git.
+
+    Read fresh every time rather than cached: the whole point of the editor is
+    that what you see is what the file says right now.
+    """
+    functions_dir = Path(functions_dir or FUNCTIONS_DIR)
+    path = functions_dir / function_id / "function.py"
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def relative_source_path(function_id: str, kind: str = "function.py") -> str:
+    """Repo-relative path, which is what a commit needs."""
+    return f"functions/{function_id}/{kind}"

@@ -394,6 +394,17 @@ services:
       opensearch: {condition: service_healthy}
     restart: unless-stopped
     ports: ["8000:8000"]
+    volumes:
+      # The repo, so the console reads declarations and source from the working
+      # tree rather than a copy baked into its image -- an edit on disk shows up
+      # on the next page load, and a commit goes to this checkout.
+      - ..:/repo
+      - ../corpus:/corpus:ro
+      - ../runs:/runs
+      # Only needed for pause/resume, which stops containers. This socket is
+      # equivalent to root on the host: mount it only while you want that
+      # button, and never on a console anyone else can reach.
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       # Linked, not embedded: time series belong in Grafana and the console
@@ -402,6 +413,17 @@ services:
       # Set to fall back to Kafka partition scans, which needs no log pipeline.
       FAAS_EVENTS_URL: ${FAAS_EVENTS_URL-http://opensearch:9200}
       FAAS_EVENTS_INDEX: ${FAAS_EVENTS_INDEX:-ss4o_logs-faas-local}
+      # Both default to off. The sandbox executes arbitrary Python behind an
+      # HTTP request and the write paths change things outside the console;
+      # neither belongs on anything reachable without authentication, and the
+      # console has none yet.
+      FAAS_CONSOLE_SANDBOX: ${CONSOLE_SANDBOX:-0}
+      FAAS_CONSOLE_ALLOW_WRITES: ${CONSOLE_ALLOW_WRITES:-0}
+      FAAS_CORPUS_DIR: /corpus
+      FAAS_REPO_DIR: /repo
+      FAAS_FUNCTIONS_DIR: /repo/functions
+      FAAS_HYDRATOR_DECLARATION: /repo/hydrator.yaml
+      FAAS_COMPOSE_PROJECT: faas-local
       FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
 
   # -- the harness ---------------------------------------------------------

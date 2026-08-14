@@ -32,7 +32,7 @@
   <tbody>
     {% for row in rows %}
       <tr id="{{ row.config.function_id }}">
-        <td><code>{{ row.config.function_id }}</code></td>
+        <td><a href="/function/{{ row.config.function_id }}"><code>{{ row.config.function_id }}</code></a></td>
         <td>{{ row.config.function_version }}</td>
         <td>
           {% if row.group %}
