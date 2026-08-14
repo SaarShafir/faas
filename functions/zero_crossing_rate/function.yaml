@@ -1,0 +1,12 @@
+function_id: zero_crossing_rate
+function_version: "1.0.0"
+image: registry/faas-zero-crossing-rate:1.0.0
+resources:
+  cpu: 1
+  memory: 256Mi
+in_flight: 2
+# The cheapest function in the set. If this one starts timing out, the problem
+# is the platform, not the work.
+per_file_timeout_seconds: 20
+retry_budget: 3
+dlq_topic: faas.dlq.zero_crossing_rate

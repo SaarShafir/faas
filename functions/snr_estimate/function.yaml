@@ -1,0 +1,10 @@
+function_id: snr_estimate
+function_version: "1.0.0"
+image: registry/faas-snr-estimate:1.0.0
+resources:
+  cpu: 1
+  memory: 512Mi
+in_flight: 2
+per_file_timeout_seconds: 30
+retry_budget: 3
+dlq_topic: faas.dlq.snr_estimate

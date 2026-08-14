@@ -1,0 +1,16 @@
+# A deliberately unreliable function (see function.py), here to keep the retry
+# ladder and the DLQ under load during a stress run.
+function_id: flaky_analyzer
+function_version: "1.0.0"
+image: registry/faas-flaky-analyzer:1.0.0
+resources:
+  cpu: 1
+  memory: 512Mi
+in_flight: 2
+per_file_timeout_seconds: 30
+retry_budget: 3
+# Short backoff: the default ladder is tuned for a real dependency coming back,
+# and waiting that out would dominate a ten-minute stress run.
+retry_backoff_seconds: 0.5
+retry_backoff_max_seconds: 5
+dlq_topic: faas.dlq.flaky_analyzer

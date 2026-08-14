@@ -1,0 +1,19 @@
+# A deliberately slow function (see function.py). It is in the local stack to
+# make the timeout path carry traffic, and it is the reason the stress run is
+# worth more than a smoke test.
+function_id: slow_burner
+function_version: "1.0.0"
+image: registry/faas-slow-burner:1.0.0
+resources:
+  cpu: 1
+  memory: 512Mi
+in_flight: 2
+# Tight on purpose: with the default burn rate the 5-minute file blows straight
+# through this and the shorter ones finish, so both branches get exercised in
+# one run.
+per_file_timeout_seconds: 15
+# Every attempt times out for a file that is too long, so this is also the
+# function that proves the retry budget is bounded and the DLQ actually catches
+# what falls off the end of it.
+retry_budget: 2
+dlq_topic: faas.dlq.slow_burner

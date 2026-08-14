@@ -1,0 +1,312 @@
+# The local stack: everything the production topology has except the parts that
+# are explicitly out of scope here (autoscaling, and the results sink, which is
+# build-order step 5 and not written yet).
+#
+# Shape mirrors §11: one Kafka, one object store, a hydrator that fans one input
+# topic out to an internal topic, and N independent function consumer groups
+# reading that topic and writing to a shared results topic. Each function is its
+# own consumer group with its own DLQ, so a slow or broken function affects
+# nobody else -- which is the property the stress run is here to test.
+#
+#   docker compose --profile stack up -d --build
+#   docker compose --profile seed run --rm seeder --calls 500
+#   docker compose --profile watch run --rm monitor --expect 500
+#
+# Everything scale-related lives in .env.
+
+name: faas-local
+
+x-s3: &s3
+  FAAS_AUDIO_BUCKET: ${FAAS_AUDIO_BUCKET:-faas-audio}
+  FAAS_S3_ENDPOINT_URL: http://minio:9000
+  # MinIO has no per-bucket DNS, and boto3's `auto` would send
+  # http://faas-audio.minio:9000. See faas_sdk.objectstore.
+  FAAS_S3_ADDRESSING_STYLE: path
+  AWS_ACCESS_KEY_ID: ${MINIO_USER:-faas}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:-faas-secret}
+  AWS_DEFAULT_REGION: us-east-1
+
+x-function: &function
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+    target: function
+  image: faas-function:local
+  depends_on:
+    topics: {condition: service_completed_successfully}
+    minio-init: {condition: service_completed_successfully}
+  restart: unless-stopped
+  profiles: [stack]
+
+x-function-env: &function-env
+  <<: *s3
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
+  # The flaky function's "have I seen this call before" markers. Under /scratch
+  # because that is the group-writable path the image guarantees is writable
+  # whatever UID the platform hands the process.
+  FAAS_FLAKY_STATE_DIR: /scratch/flaky
+
+services:
+
+  # -- infrastructure ------------------------------------------------------
+
+  kafka:
+    image: apache/kafka:3.9.0
+    hostname: kafka
+    profiles: [stack]
+    ports: ["9094:9094"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      # Two advertised listeners: containers reach the broker as kafka:9092,
+      # and anything you run from the host (kafka-console-consumer, a debug
+      # script) reaches it on localhost:9094. A single listener cannot serve
+      # both, and getting this wrong is the classic "connects, then times out
+      # producing" failure.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Off, so a typo in a topic name fails loudly instead of quietly creating
+      # a one-partition topic that then breaks the explicit partitioner.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_RETENTION_HOURS: 48
+      KAFKA_NUM_PARTITIONS: 12
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  topics:
+    image: apache/kafka:3.9.0
+    profiles: [stack]
+    depends_on:
+      kafka: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "/init/topics.sh"]
+    environment:
+      # Both of these must match `results_topic_partitions` in the declarations
+      # (default 200 in faas_sdk.config). The SDK computes the partition itself
+      # with murmur2 and passes it explicitly, so a topic with fewer partitions
+      # than the declaration claims means producing to a partition that does not
+      # exist. See ConfluentProducer.produce.
+      RESULTS_PARTITIONS: ${RESULTS_PARTITIONS:-200}
+      INTERNAL_PARTITIONS: ${INTERNAL_PARTITIONS:-200}
+      RAW_PARTITIONS: ${RAW_PARTITIONS:-12}
+    volumes:
+      - ./init:/init:ro
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    profiles: [stack]
+    command: server /data --console-address ":9001"
+    ports: ["9000:9000", "9001:9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-faas}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-faas-secret}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    profiles: [stack]
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "/init/minio.sh"]
+    environment:
+      MINIO_USER: ${MINIO_USER:-faas}
+      MINIO_PASSWORD: ${MINIO_PASSWORD:-faas-secret}
+      FAAS_AUDIO_BUCKET: ${FAAS_AUDIO_BUCKET:-faas-audio}
+    volumes:
+      - ./init:/init:ro
+
+  # -- the corpus and its Audio API ----------------------------------------
+
+  corpus:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: harness
+    image: faas-harness:local
+    profiles: [stack]
+    command: ["python", "-m", "stress.corpus", "--out", "/corpus", "--samples", "/samples"]
+    volumes:
+      # A bind mount, not a named volume, and the reason is worth keeping.
+      #
+      # Docker creates a named volume owned by root with mode 755. The image
+      # runs as 1001:0 (see docker/Dockerfile) and made every path it owns
+      # group-writable, but it cannot do that for a volume that does not exist
+      # until the container starts -- so corpus generation failed with
+      # "Permission denied" on the first run of this stack.
+      #
+      # That is not a compose quirk. A PVC mounted into an OpenShift pod behaves
+      # the same way unless the pod sets fsGroup, which is exactly the §11
+      # random-UID problem this deployment target has.
+      - ../corpus:/corpus
+      # Drop real recordings in here and they join the corpus on the next run.
+      - ../samples:/samples:ro
+
+  audio-api:
+    image: faas-harness:local
+    profiles: [stack]
+    depends_on:
+      corpus: {condition: service_completed_successfully}
+    command: ["python", "-m", "stress.audio_api", "--corpus", "/corpus"]
+    environment:
+      # Off by default. Turn it up to put the retry ladder under load -- the
+      # client maps 503 to TransientError, which is what the retry budget and
+      # backoff exist for.
+      FAAS_STUB_ERROR_RATE: ${AUDIO_API_ERROR_RATE:-0}
+      FAAS_STUB_LATENCY_MS: ${AUDIO_API_LATENCY_MS:-0}
+      FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
+    ports: ["8080:8080"]
+    volumes:
+      - ../corpus:/corpus:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # -- the hydrator --------------------------------------------------------
+
+  hydrator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: hydrator
+    image: faas-hydrator:local
+    profiles: [stack]
+    # Two replicas, so the run exercises a real rebalance the moment either one
+    # restarts -- the last part of §5.2 still resting on fakes in the test suite.
+    deploy:
+      replicas: ${HYDRATOR_REPLICAS:-2}
+    depends_on:
+      topics: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+      audio-api: {condition: service_healthy}
+    restart: unless-stopped
+    environment:
+      <<: *s3
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      FAAS_AUDIO_API_URL: http://audio-api:8080
+      FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
+      # §4.1 leaves the input schema to whoever owns the topic; the seeder
+      # writes these two fields.
+      FAAS_CALL_ID_FIELD: call_id
+      FAAS_AUDIO_ID_FIELD: audio_id
+
+  # -- the ten functions ---------------------------------------------------
+  #
+  # One image, ten services, ten consumer groups. Adding an eleventh is a
+  # directory and six lines here -- no new image, no new topic, no infra ticket.
+
+  duration-rms:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: duration_rms
+      FAAS_DECLARATION: /app/functions/duration_rms/function.yaml
+
+  silence-ratio:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: silence_ratio
+      FAAS_DECLARATION: /app/functions/silence_ratio/function.yaml
+
+  clipping-detect:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: clipping_detect
+      FAAS_DECLARATION: /app/functions/clipping_detect/function.yaml
+
+  zero-crossing-rate:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: zero_crossing_rate
+      FAAS_DECLARATION: /app/functions/zero_crossing_rate/function.yaml
+
+  spectral-centroid:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: spectral_centroid
+      FAAS_DECLARATION: /app/functions/spectral_centroid/function.yaml
+
+  spectral-rolloff:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: spectral_rolloff
+      FAAS_DECLARATION: /app/functions/spectral_rolloff/function.yaml
+
+  snr-estimate:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: snr_estimate
+      FAAS_DECLARATION: /app/functions/snr_estimate/function.yaml
+
+  energy-vad:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: energy_vad
+      FAAS_DECLARATION: /app/functions/energy_vad/function.yaml
+
+  slow-burner:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: slow_burner
+      FAAS_DECLARATION: /app/functions/slow_burner/function.yaml
+      FAAS_BURN_SECONDS_PER_MINUTE: ${BURN_SECONDS_PER_MINUTE:-20}
+
+  flaky-analyzer:
+    <<: *function
+    environment:
+      <<: *function-env
+      FAAS_FUNCTION: flaky_analyzer
+      FAAS_DECLARATION: /app/functions/flaky_analyzer/function.yaml
+      FAAS_FLAKY_TRANSIENT_RATE: ${FLAKY_TRANSIENT_RATE:-0.15}
+      FAAS_FLAKY_POISON_RATE: ${FLAKY_POISON_RATE:-0.05}
+
+  # -- the harness ---------------------------------------------------------
+  #
+  # Both are one-shot: `run --rm`, not `up`. They drive and measure the stack
+  # rather than being part of it.
+
+  seeder:
+    image: faas-harness:local
+    profiles: [seed]
+    entrypoint: ["python", "-m", "stress.seed"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
+    volumes:
+      - ../corpus:/corpus:ro
+      - ../runs:/runs
+
+  monitor:
+    image: faas-harness:local
+    profiles: [watch]
+    entrypoint: ["python", "-m", "stress.monitor"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
+    volumes:
+      - ../runs:/runs

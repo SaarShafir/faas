@@ -16,6 +16,7 @@ Last updated: 2026-08-14.
 | 2 | Protobuf schemas — `AudioReference`, `Result`, Buf setup | **done** |
 | 3 | Hydrator | **done** |
 | 4 | One trivial reference function, end to end | **done** |
+| — | Ten functions on a local stack that mimics production | **done** |
 | 5 | Results sink service | not started |
 | 6 | Autoscaling on lag | not started |
 | 7 | Aggregator + `call_complete` | not started |
@@ -28,20 +29,24 @@ wire format.
 
 ## Tests
 
-209 total. The unit suite runs in ~7s and is the default; the broker suite needs
-Docker and runs in ~4min.
+247 total. The unit suite runs in ~25s and is the default; the broker suite
+needs Docker and runs in ~4min.
 
 ```bash
-pytest                 # 197 unit tests
+pytest                 # 235 unit tests
 pytest -m kafka        # 12 broker tests, needs Docker
 ```
 
 | Area | Tests |
 |---|---|
-| SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 101 |
+| SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 115 |
 | Hydrator (flac, transcode, metadata, hydrator, pipeline) | 72 |
-| Reference function + contract | 24 |
+| Functions (ten of them) + contract | 43 |
+| Object store and Audio API stub | 12 |
 | Broker (poll interval, commits, partitioner) | 12 |
+
+The function tests run against the generated corpus, so they need it present:
+`python -m stress.corpus --out corpus`. They skip rather than fail without it.
 
 ## Environment
 
@@ -61,6 +66,75 @@ Everything below is installed and working on this machine.
 
 ---
 
+## The local stack, and what the stress run found
+
+`compose/` brings up the production topology minus the parts that do not exist
+yet: Kafka, MinIO, an Audio API stub serving a generated corpus, two hydrators
+and ten functions, each its own consumer group with its own DLQ.
+
+```bash
+docker compose --profile stack up -d --build
+docker compose --profile seed  run --rm seeder  --calls 300 --rate 25
+docker compose --profile watch run --rm monitor --idle-seconds 60
+python -m stress.chaos --service spectral-centroid --signal SIGKILL
+```
+
+Run of 2026-08-14: 300 calls, 19,140 seconds of audio, seeded at 25/s, with one
+function SIGKILLed and a hydrator SIGTERMed mid-flight.
+
+| | |
+|---|---|
+| Results | 2,800 across 10 functions, 0 lost |
+| Duplicates | 1, in the SIGKILLed function — correct at-least-once redelivery |
+| Realtime multiple | 76–130x per file for the eight analyzers (§8 floor is 25) |
+| Hydration failures | 26, all deliberate: 12 `AUDIO_NOT_FOUND`, 14 `TRANSCODE_FAILED` |
+| Final lag | 0 on nine functions, 309 on `slow_burner` — isolation holds |
+
+### Bugs the stress run found
+
+1. **A per-file timeout crash-looped the pod.** The headline. `_enforce_deadlines`
+   dropped the job from `_in_flight` and called `pool.cancel`, but
+   `ProcessWorkerPool` cannot interrupt a worker already inside `process()` — it
+   abandons the *outcome* and the slot stays occupied. The runner then saw a
+   free slot, resumed its partitions, polled the next file and submitted into a
+   full pool, which raised `RuntimeError: pool at capacity` out of `run_once` and
+   killed the process — dropping every other in-flight file and leaving queued
+   results undelivered. `slow_burner` completed 2 of 100 files before the fix.
+
+   The whole unit suite missed it because `ManualPool.cancel` frees the slot it
+   is asked to cancel and the real pool cannot. Capacity decisions now consult
+   the pool's own occupancy, and work that does not fit is deferred rather than
+   submitted. `tests/test_timeout_capacity.py` models the real semantics in
+   `StubbornPool`; four of its seven tests fail without the fix.
+
+2. **A named volume defeated the group-writable image.** Corpus generation died
+   with `Permission denied`: Docker creates a named volume root-owned at 755,
+   and the image runs as a non-root user in group 0. This is precisely the §11
+   random-UID problem — a PVC in an OpenShift pod behaves the same way unless
+   the pod sets `fsGroup`. The local stack uses a bind mount; **the deployment
+   manifests, when they get written, will need `fsGroup: 0` for any writable
+   mount.**
+
+3. **A truncated mp3 hydrates successfully.** Written into the corpus expecting
+   a decode failure; it is not one. ffmpeg and libsndfile both resync and return
+   the ~150s that survive, so a half-uploaded object becomes a valid FLAC of the
+   wrong length with only a warning nobody sees. Nothing in the pipeline compares
+   measured duration against the reference's claim — except `duration_rms`, which
+   reports both, which is now the end-to-end test of that decision.
+
+### Observations that are not bugs, but will bite
+
+- **A function cannot see its own attempt count.** §5.1 hands `process` only
+  `(ref, audio)`, and the attempt lives on the §6 envelope. So a function cannot
+  say "this is my last attempt, return something degraded rather than nothing".
+  `flaky_analyzer` needed a marker file on disk to fail once and then succeed.
+- **The `assigned` log line prints every partition.** At 200 partitions across
+  eleven consumer groups that is thousands of lines per rebalance, which is both
+  unreadable and not free. It should log a count and a range.
+- **A dead producer loses queued records.** The crash above logged
+  `Producer terminating with 1 message still in queue`. Whatever the crash, the
+  shutdown path should flush.
+
 ## Decisions worth knowing about
 
 **The hydrator runs on the SDK's runner, not its own loop.** A transcode is
@@ -78,7 +152,8 @@ erode the §6 envelope/payload split.
 production path and `bootstrap.py` defaults to it; `JsonCodec` stays for local
 dev. `tests/test_codec_swap.py` runs the whole runner over both.
 
-**`run()` takes the function class, not an instance** — see bug 2 below.
+**`run()` takes the function class, not an instance** — see bug 2 under
+"Bugs found by testing".
 
 **`Status.SUCCESS` is 1, deviating from §6's 0.** The one place the wire does
 not match the document, and deliberate: proto3 has no presence for enums, so
@@ -126,8 +201,12 @@ dropping `-ar` from the transcoder fails 10.
 ### P0 — close before step 5
 
 - **A real rebalance test.** Two consumers in a group, partitions moving,
-  `_on_revoke` draining in-flight work under a live coordinator. The last part
-  of §5.2 still resting on fakes, and the spec's stated most-likely failure.
+  `_on_revoke` draining in-flight work under a live coordinator. Still on fakes
+  in the suite, but no longer unobserved: the stress run SIGKILLed a function
+  and SIGTERMed a hydrator mid-flight, and the accounting came back with one
+  duplicate and no losses. That is evidence, not a test -- it is not
+  reproducible in CI, and it did not cover partitions moving between two live
+  consumers of the same group.
 - **CI.** Nothing runs automatically. Needs: unit suite on every push, `buf lint`
   and `buf breaking`, broker suite on changes to `kafka.py`/`runner.py` or
   nightly. Both buf checks now run clean locally against buf 1.72 (`buf breaking`
@@ -152,7 +231,10 @@ dropping `-ar` from the transcoder fails 10.
 - **Timeout cancellation is best-effort for a running job.** `ProcessWorkerPool`
   cannot interrupt a worker mid-file without killing the process; it abandons the
   outcome so the runner can retry or DLQ, but the worker burns CPU until it
-  returns.
+  returns. Until 2026-08-14 this note understated it: the runner treated the
+  abandoned slot as free and crashed on the next submit. Fixed (see the stress
+  run above); the wasted CPU remains, and a saturated `slow_burner` still holds
+  its own partitions' lag while every other function stays at zero.
 - **A retry in backoff holds its partition's low-water mark.** Correct — the file
   is unfinished — but a long backoff delays commits for everything behind it on
   that partition. Watch once real retry rates exist.

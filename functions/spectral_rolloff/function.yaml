@@ -1,0 +1,10 @@
+function_id: spectral_rolloff
+function_version: "1.0.0"
+image: registry/faas-spectral-rolloff:1.0.0
+resources:
+  cpu: 2
+  memory: 1Gi
+in_flight: 2
+per_file_timeout_seconds: 60
+retry_budget: 3
+dlq_topic: faas.dlq.spectral_rolloff

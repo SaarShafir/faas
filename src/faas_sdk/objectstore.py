@@ -26,12 +26,41 @@ def s3_audio_handle_factory():
     return audio_handle_factory(S3ObjectStore(bucket=os.environ["FAAS_AUDIO_BUCKET"]))
 
 
+def client_kwargs_from_env() -> dict:
+    """boto3 arguments for talking to something that is not AWS.
+
+    The local stack runs MinIO, and two things differ from the AWS default.
+    The endpoint has to be pointed somewhere else -- newer botocore reads
+    `AWS_ENDPOINT_URL_S3` itself, but the SDK should not depend on the version
+    installed in an image it does not build. And addressing has to be path-style:
+    boto3's `auto` sends `http://bucket.host/key`, which needs per-bucket DNS
+    that no local container has.
+
+    Empty by default, so an image with no S3 environment set behaves exactly as
+    it did before -- real AWS, real endpoints, virtual-host addressing.
+    """
+    kwargs: dict = {}
+
+    endpoint = os.environ.get("FAAS_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+
+    style = os.environ.get("FAAS_S3_ADDRESSING_STYLE", "")
+    if style:
+        from botocore.config import Config
+
+        kwargs["config"] = Config(s3={"addressing_style": style})
+
+    return kwargs
+
+
 class S3ObjectStore:
     def __init__(self, bucket: str, client=None, **client_kwargs):
         if client is None:
             import boto3
 
-            client = boto3.client("s3", **client_kwargs)
+            # Explicit arguments win: a caller that passes an endpoint means it.
+            client = boto3.client("s3", **{**client_kwargs_from_env(), **client_kwargs})
         self.bucket = bucket
         self.client = client
 

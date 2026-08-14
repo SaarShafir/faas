@@ -82,6 +82,10 @@ class FunctionRunner:
         self.ledger = OffsetLedger()
         self._in_flight: dict[str, _InFlight] = {}
         self._retry_queue: list[tuple] = []  # (due_monotonic, Job)
+        # Work the runner owns but the pool had no room for. Distinct from the
+        # retry queue: nothing here has failed, so no attempt is consumed and no
+        # backoff applies. See `_submit`.
+        self._deferred: list[Job] = []
         self._paused = False
         self._running = False
         self._last_commit = self.clock.monotonic()
@@ -126,6 +130,7 @@ class FunctionRunner:
     def run_once(self) -> None:
         self._drain_completions()
         self._enforce_deadlines()
+        self._submit_deferred()
         self._resubmit_due_retries()
         self._apply_backpressure()
 
@@ -139,6 +144,18 @@ class FunctionRunner:
     @property
     def in_flight(self) -> int:
         return len(self._in_flight)
+
+    @property
+    def _occupancy(self) -> int:
+        """What backpressure has to reason about.
+
+        Three things can hold capacity, and only the first is in `_in_flight`:
+        work the runner is tracking, work the pool is still running after a
+        timeout abandoned it, and work deferred because the pool was full. Using
+        only `_in_flight` resumes partitions while the workers are still busy,
+        which is how a timeout turned into a crashed pod.
+        """
+        return max(len(self._in_flight), self.pool.in_flight()) + len(self._deferred)
 
     # -- dispatch ----------------------------------------------------------
 
@@ -156,6 +173,20 @@ class FunctionRunner:
         self._submit(job)
 
     def _submit(self, job: Job) -> None:
+        if self.pool.in_flight() >= self.pool.max_in_flight:
+            # The pool is genuinely full even though the runner may think a slot
+            # is free. That happens after a timeout: `_enforce_deadlines` drops
+            # the job from `_in_flight`, but `ProcessWorkerPool.cancel` cannot
+            # interrupt a worker that is already running, so it abandons the
+            # outcome and the slot stays occupied until the work returns.
+            #
+            # Submitting anyway used to raise out of `run_once` and kill the
+            # process, taking every other in-flight file with it. Deferring
+            # keeps the offset uncommitted -- the ledger already has it -- so
+            # the worst case is redelivery, not loss.
+            self._deferred.append(job)
+            return
+
         now = self.clock.monotonic()
         self._in_flight[job.job_id] = _InFlight(
             job=job,
@@ -251,6 +282,11 @@ class FunctionRunner:
             error.code,
         )
 
+    def _submit_deferred(self) -> None:
+        """Work that arrived while the pool was full, oldest first."""
+        while self._deferred and self.pool.in_flight() < self.pool.max_in_flight:
+            self._submit(self._deferred.pop(0))
+
     def _resubmit_due_retries(self) -> None:
         if not self._retry_queue:
             return
@@ -258,8 +294,9 @@ class FunctionRunner:
         still_waiting = []
         for due, job in self._retry_queue:
             # Capacity is shared with fresh records; a retry that does not fit
-            # waits rather than overcommitting the pool.
-            if due <= now and self.in_flight < self.pool.max_in_flight:
+            # waits rather than overcommitting the pool. The pool's own count is
+            # what matters here -- see `_submit`.
+            if due <= now and self.pool.in_flight() < self.pool.max_in_flight:
                 self._submit(job)
             else:
                 still_waiting.append((due, job))
@@ -298,7 +335,7 @@ class FunctionRunner:
     # -- backpressure ------------------------------------------------------
 
     def _apply_backpressure(self) -> None:
-        saturated = self.in_flight >= self.pool.max_in_flight
+        saturated = self._occupancy >= self.pool.max_in_flight
         if saturated and not self._paused:
             partitions = self.consumer.assignment()
             if partitions:

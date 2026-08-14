@@ -7,3 +7,8 @@ __pycache__/
 
 # Local env files
 .env
+# Generated audio -- rebuild with `python -m stress.corpus --out corpus`.
+corpus/
+
+# Stress-run artefacts: seed manifests and monitor reports.
+runs/

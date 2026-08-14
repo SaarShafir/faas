@@ -1,0 +1,12 @@
+function_id: spectral_centroid
+function_version: "1.0.0"
+image: registry/faas-spectral-centroid:1.0.0
+resources:
+  # The FFT is the one piece of real arithmetic in the set, and numpy will use
+  # more than one core for it given the chance.
+  cpu: 2
+  memory: 1Gi
+in_flight: 2
+per_file_timeout_seconds: 60
+retry_budget: 3
+dlq_topic: faas.dlq.spectral_centroid

@@ -1,0 +1,17 @@
+# The corpus is generated into the image's volume at run time, not baked in --
+# it is tens of megabytes of audio and it changes every time you drop a file
+# into samples/.
+corpus/
+samples/
+
+.venv/
+.git/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+*.pyc
+
+# Test-only trees. The function image should not carry them, and leaving them
+# out keeps a rebuild from being triggered by a test edit.
+tests/
+runs/
