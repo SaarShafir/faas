@@ -13,6 +13,7 @@ import signal
 from .clock import SystemClock
 from .config import FunctionConfig
 from .dlq import DeadLetterQueue
+from .events import from_env as events_from_env
 from .function import validate
 from .metrics import from_env as metrics_from_env
 from .pool import ProcessWorkerPool
@@ -35,6 +36,7 @@ def build_runner(
     pool=None,
     codec=None,
     metrics=None,
+    events=None,
     clock=None,
     bootstrap_servers=None,
 ) -> FunctionRunner:
@@ -71,6 +73,7 @@ def build_runner(
             "service.version": config.function_version,
         }
     )
+    events = events or events_from_env(config.function_id, config.function_version)
     bootstrap_servers = bootstrap_servers or os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "")
 
     if object_store is None:
@@ -129,6 +132,7 @@ def build_runner(
         ),
         dlq=DeadLetterQueue(config=config, producer=producer, clock=clock),
         metrics=metrics,
+        events=events,
         clock=clock,
     )
 

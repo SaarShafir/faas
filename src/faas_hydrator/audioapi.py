@@ -32,9 +32,7 @@ class AudioApiClient:
             self.rate_limiter.acquire()
 
         try:
-            response = self.session.get(
-                f"{self.base_url}/audio/{audio_id}", timeout=self.timeout
-            )
+            response = self.session.get(f"{self.base_url}/audio/{audio_id}", timeout=self.timeout)
         except Exception as exc:  # noqa: BLE001 - requests' hierarchy is broad
             raise TransientError(f"audio api unreachable: {exc}", code="AUDIO_API_ERROR") from exc
 
@@ -47,9 +45,7 @@ class AudioApiClient:
             raise PoisonMessageError(
                 f"audio {audio_id} not available ({status})", code="AUDIO_NOT_FOUND"
             )
-        raise TransientError(
-            f"audio api returned {status} for {audio_id}", code="AUDIO_API_ERROR"
-        )
+        raise TransientError(f"audio api returned {status} for {audio_id}", code="AUDIO_API_ERROR")
 
 
 class SourceAudioHandle:

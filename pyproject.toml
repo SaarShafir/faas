@@ -35,6 +35,13 @@ console = [
     "confluent-kafka>=2.5",
     "PyYAML>=6.0",
 ]
+# Per-call events over OTLP (FAAS_EVENTS=otlp). Separate from `metrics`
+# because a deployment can reasonably want one without the other.
+events = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
+]
 metrics = [
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",

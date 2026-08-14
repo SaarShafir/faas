@@ -148,9 +148,7 @@ def test_an_undecodable_message_never_reaches_the_pool(runner, consumer, pool, p
 
 def test_an_undecodable_message_still_emits_a_failed_result(runner, consumer, producer, config):
     """The body did not parse, but the record key is the call_id (§4.2)."""
-    consumer.feed(
-        reference_message(partition=0, offset=10, call_id="c10", raw_value=b"{not json")
-    )
+    consumer.feed(reference_message(partition=0, offset=10, call_id="c10", raw_value=b"{not json"))
     runner.run_once()
 
     results = _results(producer, config, runner.codec)

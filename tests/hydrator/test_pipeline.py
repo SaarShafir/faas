@@ -21,9 +21,11 @@ INTERNAL_TOPIC = "faas.audio.internal"
 
 
 def _message(offset=0, call_id="c1", partition=0, raw=None):
-    value = raw if raw is not None else json.dumps(
-        {"call_id": call_id, "audio_id": f"audio-{call_id}"}
-    ).encode()
+    value = (
+        raw
+        if raw is not None
+        else json.dumps({"call_id": call_id, "audio_id": f"audio-{call_id}"}).encode()
+    )
     return InboundMessage(
         topic=INPUT_TOPIC,
         partition=partition,

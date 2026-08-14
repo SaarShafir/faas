@@ -161,16 +161,21 @@ def test_empty_output_is_rejected(ffmpeg):
         Transcoder(run=ffmpeg).to_canonical_flac(b"input")
 
 
-needs_ffmpeg = pytest.mark.skipif(
-    shutil.which("ffmpeg") is None, reason="ffmpeg not installed"
-)
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 
 
 def _wav(seconds=2, rate=44100, layout="stereo", metadata=None):
     argv = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"anullsrc=r={rate}:cl={layout}",
-        "-t", str(seconds),
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"anullsrc=r={rate}:cl={layout}",
+        "-t",
+        str(seconds),
     ]
     for key, value in (metadata or {}).items():
         argv += ["-metadata", f"{key}={value}"]

@@ -66,9 +66,7 @@ def test_our_partition_matches_librdkafkas_for_every_key(bootstrap_servers, topi
 
     ours = {key: partition_for(key, PARTITIONS) for key in KEYS}
 
-    mismatches = {
-        key: (ours[key], librdkafka[key]) for key in KEYS if ours[key] != librdkafka[key]
-    }
+    mismatches = {key: (ours[key], librdkafka[key]) for key in KEYS if ours[key] != librdkafka[key]}
     assert mismatches == {}, f"hash disagrees with librdkafka for {len(mismatches)} keys"
 
 

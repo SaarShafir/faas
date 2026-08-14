@@ -27,9 +27,7 @@ class Function(Protocol):
     function_id: str
     function_version: str
 
-    def process(
-        self, ref: AudioReference, audio: AudioHandle
-    ) -> FunctionResult | None: ...
+    def process(self, ref: AudioReference, audio: AudioHandle) -> FunctionResult | None: ...
 
 
 def validate(function) -> None:

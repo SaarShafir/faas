@@ -38,6 +38,16 @@ x-function: &function
   restart: unless-stopped
   profiles: [stack]
 
+x-events: &events
+  # Per-call events, which is what the console reads. Metrics answer "how is
+  # this function doing"; these answer "what happened to call abc-123", which a
+  # metric cannot without a call_id label taking the metric store with it.
+  FAAS_EVENTS: otlp
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  # The SDK ships an OTLP exporter and nothing beyond it: the collector decides
+  # where these land, so swapping OpenSearch out never touches an image.
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+
 x-metrics: &metrics
   # §5.5's set, which the SDK emits for every function for free and which was
   # going into NullMetrics in every deployment until this existed. Each pod
@@ -46,7 +56,7 @@ x-metrics: &metrics
   FAAS_METRICS_PORT: "9108"
 
 x-function-env: &function-env
-  <<: [*s3, *metrics]
+  <<: [*s3, *metrics, *events]
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
   # The flaky function's "have I seen this call before" markers. Under /scratch
@@ -205,7 +215,7 @@ services:
       audio-api: {condition: service_healthy}
     restart: unless-stopped
     environment:
-      <<: [*s3, *metrics]
+      <<: [*s3, *metrics, *events]
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       FAAS_AUDIO_API_URL: http://audio-api:8080
       FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
@@ -292,6 +302,41 @@ services:
       FAAS_FLAKY_TRANSIENT_RATE: ${FLAKY_TRANSIENT_RATE:-0.15}
       FAAS_FLAKY_POISON_RATE: ${FLAKY_POISON_RATE:-0.05}
 
+  # -- events ---------------------------------------------------------------
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    profiles: [stack]
+    environment:
+      discovery.type: single-node
+      # Local only, on a private compose network. A cluster needs the security
+      # plugin and real credentials.
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+      nofile: {soft: 65536, hard: 65536}
+    ports: ["9200:9200"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.123.0
+    profiles: [stack]
+    depends_on:
+      opensearch: {condition: service_healthy}
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./init/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports: ["4318:4318"]
+    restart: unless-stopped
+
   # -- observability -------------------------------------------------------
   #
   # Two sources, deliberately. The SDK's own §5.5 metrics come from each pod's
@@ -346,6 +391,7 @@ services:
     profiles: [stack]
     depends_on:
       topics: {condition: service_completed_successfully}
+      opensearch: {condition: service_healthy}
     restart: unless-stopped
     ports: ["8000:8000"]
     environment:
@@ -353,6 +399,9 @@ services:
       # Linked, not embedded: time series belong in Grafana and the console
       # does not reimplement them.
       FAAS_GRAFANA_URL: http://localhost:3000
+      # Set to fall back to Kafka partition scans, which needs no log pipeline.
+      FAAS_EVENTS_URL: ${FAAS_EVENTS_URL-http://opensearch:9200}
+      FAAS_EVENTS_INDEX: ${FAAS_EVENTS_INDEX:-ss4o_logs-faas-local}
       FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
 
   # -- the harness ---------------------------------------------------------

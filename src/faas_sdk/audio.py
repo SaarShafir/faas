@@ -54,9 +54,7 @@ class AudioHandle:
         try:
             import soundfile
         except ImportError as exc:  # pragma: no cover - packaging error, not data
-            raise RuntimeError(
-                "soundfile/libsndfile is missing from the function image"
-            ) from exc
+            raise RuntimeError("soundfile/libsndfile is missing from the function image") from exc
 
         try:
             samples, sample_rate = soundfile.read(io.BytesIO(raw), dtype="float32")
@@ -68,14 +66,11 @@ class AudioHandle:
 
         if sample_rate != self.ref.sample_rate:
             raise PoisonMessageError(
-                f"{self.object_key} is {sample_rate} Hz, reference says "
-                f"{self.ref.sample_rate} Hz",
+                f"{self.object_key} is {sample_rate} Hz, reference says {self.ref.sample_rate} Hz",
                 code="SAMPLE_RATE_MISMATCH",
             )
         if samples.ndim > 1:
-            raise PoisonMessageError(
-                f"{self.object_key} is not mono", code="CHANNEL_MISMATCH"
-            )
+            raise PoisonMessageError(f"{self.object_key} is not mono", code="CHANNEL_MISMATCH")
         self.sample_rate = sample_rate
         return samples
 

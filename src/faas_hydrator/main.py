@@ -16,6 +16,7 @@ import signal
 from faas_sdk.clock import SystemClock
 from faas_sdk.config import FunctionConfig
 from faas_sdk.dlq import DeadLetterQueue
+from faas_sdk.events import from_env as events_from_env
 from faas_sdk.metrics import from_env as metrics_from_env
 from faas_sdk.pool import InlineWorkerPool
 from faas_sdk.runner import FunctionRunner
@@ -41,6 +42,7 @@ def build_runner(
     transcoder=None,
     codec=None,
     metrics=None,
+    events=None,
     clock=None,
     bootstrap_servers=None,
 ) -> FunctionRunner:
@@ -55,6 +57,7 @@ def build_runner(
             "service.version": config.function_version,
         }
     )
+    events = events or events_from_env(config.function_id, config.function_version)
     bootstrap_servers = bootstrap_servers or os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "")
 
     if codec is None:
@@ -95,9 +98,7 @@ def build_runner(
             num_partitions_by_topic={config.results_topic: config.results_topic_partitions},
         )
 
-    hydrator = Hydrator(
-        transcoder=transcoder, object_store=object_store, codec=codec, clock=clock
-    )
+    hydrator = Hydrator(transcoder=transcoder, object_store=object_store, codec=codec, clock=clock)
 
     # An inline pool is safe *here*, unlike for a function (see
     # faas_sdk.bootstrap), and the difference is worth being precise about.
@@ -134,6 +135,7 @@ def build_runner(
         ),
         dlq=DeadLetterQueue(config=config, producer=producer, clock=clock),
         metrics=metrics,
+        events=events,
         clock=clock,
     )
 

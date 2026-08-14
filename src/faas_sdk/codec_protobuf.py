@@ -76,8 +76,7 @@ class ProtobufCodec:
             # payload_body is a oneof: setting both means one is silently
             # dropped on the wire. Fail here rather than downstream.
             raise ValueError(
-                "payload and payload_ref are mutually exclusive; the claim check "
-                "sets exactly one"
+                "payload and payload_ref are mutually exclusive; the claim check sets exactly one"
             )
 
         message = result_pb2.Result(

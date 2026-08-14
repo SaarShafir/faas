@@ -88,9 +88,7 @@ class ResultEmitter:
     def payload_key(self, call_id: str) -> str:
         # Namespaced by function and version: a shadow-deployed v2 writes
         # alongside v1 rather than over it (spec §4.3).
-        return (
-            f"results/{self.config.function_id}/{self.config.function_version}/{call_id}"
-        )
+        return f"results/{self.config.function_id}/{self.config.function_version}/{call_id}"
 
     def _produce(self, result: Result) -> None:
         self.producer.produce(

@@ -106,9 +106,7 @@ def test_the_second_file_waits_rather_than_overcommitting(stubborn_runner, consu
     assert [j.call_id for j in pool.submitted] == ["c1"]
 
 
-def test_the_waiting_file_runs_once_the_worker_finally_returns(
-    stubborn_runner, consumer, clock
-):
+def test_the_waiting_file_runs_once_the_worker_finally_returns(stubborn_runner, consumer, clock):
     from faas_sdk.testing import reference_message
 
     runner, pool = stubborn_runner
@@ -214,5 +212,3 @@ def test_the_pool_still_refuses_an_overcommitted_submit():
     pool.submit(job("a", "c1"))
     with pytest.raises(RuntimeError, match="capacity"):
         pool.submit(job("b", "c2"))
-
-

@@ -37,10 +37,14 @@ python -m stress.chaos --service hydrator --signal SIGTERM
 | Console | <http://localhost:8000> — trace a call, browse the DLQ, config lint |
 | Grafana | <http://localhost:3000> — fleet and per-function dashboards |
 | Prometheus | <http://localhost:9090> — targets, rules, raw queries |
+| OpenSearch | <http://localhost:9200> — the raw events, one per call transition |
 
-The console is read-only by design and reads Kafka directly, so a call lookup is
-two targeted partition reads rather than a topic scan: results and references are
-both partitioned on `call_id` alone (§6, §4.2). `GET /api/lint` returns non-zero
+The console is read-only by design. Call tracing reads the event log, which
+answers questions partition reads cannot ("every call this tenant failed"); set
+`FAAS_EVENTS_URL=` empty to fall back to Kafka, where a lookup is two targeted
+partition reads rather than a topic scan, because results and references are both
+partitioned on `call_id` alone (§6, §4.2). Fleet, topics and lint always come
+from the broker — consumer lag is broker state and no log line can carry it. `GET /api/lint` returns non-zero
 `ok` when a declaration disagrees with the topics it points at, which makes it a
 usable smoke test after any topic change.
 

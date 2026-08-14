@@ -37,7 +37,7 @@ COPY src/ ./src/
 # `metrics` alongside `runtime`: the §5.5 set is emitted by every runner, and
 # without the exporter installed FAAS_METRICS=prometheus degrades to NullMetrics
 # and the pod is silently invisible to the dashboards.
-RUN pip install --no-cache-dir ".[runtime,metrics]"
+RUN pip install --no-cache-dir ".[runtime,metrics,events]"
 
 # `functions/` is deliberately not packaged: a function lives beside its
 # declaration in the repo (§8), not inside the SDK distribution.
@@ -75,7 +75,7 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir ".[hydrator,metrics]"
+RUN pip install --no-cache-dir ".[hydrator,metrics,events]"
 USER 1001:0
 
 COPY hydrator.yaml ./hydrator.yaml
@@ -113,7 +113,7 @@ CMD ["uvicorn", "faas_console.app:app", "--host", "0.0.0.0", "--port", "8000"]
 FROM hydrator AS harness
 
 USER root
-RUN pip install --no-cache-dir ".[hydrator,metrics]" boto3
+RUN pip install --no-cache-dir ".[hydrator,metrics,events]" boto3
 USER 1001:0
 
 COPY stress/ ./stress/

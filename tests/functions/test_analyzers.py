@@ -252,9 +252,7 @@ def test_the_flaky_function_sends_poison_straight_to_the_dlq(tmp_path, monkeypat
     from faas_sdk.errors import PoisonMessageError
     from functions.flaky_analyzer.function import FlakyAnalyzer, _bucket
 
-    monkeypatch.setattr(
-        "functions.flaky_analyzer.function.STATE_DIR", str(tmp_path), raising=False
-    )
+    monkeypatch.setattr("functions.flaky_analyzer.function.STATE_DIR", str(tmp_path), raising=False)
     poison = next(f"call-{i}" for i in range(500) if _bucket(f"call-{i}") < 0.05)
 
     with pytest.raises(PoisonMessageError):
@@ -269,9 +267,7 @@ def test_the_flaky_function_recovers_on_the_second_attempt(tmp_path, monkeypatch
     from functions.flaky_analyzer import function as module
 
     monkeypatch.setattr(module, "STATE_DIR", str(tmp_path))
-    transient = next(
-        f"call-{i}" for i in range(500) if 0.05 <= module._bucket(f"call-{i}") < 0.20
-    )
+    transient = next(f"call-{i}" for i in range(500) if 0.05 <= module._bucket(f"call-{i}") < 0.20)
     audio = hydrated("tone-440-stereo-44k")
 
     with pytest.raises(TransientError):

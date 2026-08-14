@@ -27,6 +27,14 @@ import uuid
 from .clock import SystemClock
 from .codec import DecodeError
 from .errors import TIMEOUT_CODE
+from .events import (
+    COMPLETED,
+    DEAD_LETTERED,
+    FAILED,
+    RECEIVED,
+    RETRY_SCHEDULED,
+    NullEvents,
+)
 from .metrics import (
     DLQ,
     FILE_LATENCY,
@@ -64,6 +72,7 @@ class FunctionRunner:
         dlq,
         decoder=None,
         metrics=None,
+        events=None,
         clock=None,
     ):
         self.config = config
@@ -78,6 +87,11 @@ class FunctionRunner:
         # same, so only the decode step is swapped.
         self.decode = decoder or codec.decode_reference
         self.metrics = metrics or NullMetrics()
+        # Metrics answer "how is this function doing", events answer "what
+        # happened to this call". Neither substitutes for the other: a call_id
+        # cannot be a metric label without destroying the metric store, and an
+        # aggregate cannot be reconstructed reliably from a lossy log pipeline.
+        self.events = events or NullEvents()
         self.clock = clock or SystemClock()
 
         self.ledger = OffsetLedger()
@@ -193,6 +207,15 @@ class FunctionRunner:
             return
 
         job = Job(job_id=uuid.uuid4().hex, ref=ref, message=message, attempt=1)
+        self.events.emit(
+            RECEIVED,
+            call_id=ref.call_id,
+            object_key=ref.object_key,
+            duration_seconds=ref.duration_seconds,
+            partition=message.partition,
+            offset=message.offset,
+            **self._labels,
+        )
         self.ledger.start(message.tp, message.offset)
         self._submit(job)
 
@@ -230,6 +253,19 @@ class FunctionRunner:
         call_id = _call_id_from_key(message.key)
         self.dlq.send(message, error, attempt=1, call_id=call_id)
         self.metrics.counter(DLQ, 1, reason=error.code, **self._labels)
+        self.events.emit(
+            DEAD_LETTERED,
+            call_id=call_id or "",
+            attempt=1,
+            error_code=error.code,
+            error_message=error.message,
+            retryable=error.retryable,
+            dlq_topic=self.config.dlq_topic,
+            source_topic=message.topic,
+            source_partition=message.partition,
+            source_offset=message.offset,
+            **self._labels,
+        )
 
         if call_id:
             self.results.emit_failure(
@@ -268,9 +304,37 @@ class FunctionRunner:
         self._complete(job)
         self._observe_latency(job, tracked)
         self.metrics.counter(PROCESSED, 1, status=outcome.status.name, **self._labels)
+        self.events.emit(
+            COMPLETED,
+            call_id=job.ref.call_id,
+            status=outcome.status.name,
+            attempt=job.attempt,
+            duration_seconds=job.ref.duration_seconds,
+            process_seconds=round(self.clock.monotonic() - tracked.submitted_at, 4),
+            partition=job.message.partition,
+            offset=job.message.offset,
+            # The payload itself, which is what makes a trace readable without a
+            # second lookup. §6's claim check bounds it: over 256 KB it is a
+            # reference rather than inline bytes, so this cannot be unbounded.
+            payload=outcome.payload,
+            payload_schema_version=outcome.schema_version,
+            **self._labels,
+        )
 
     def _handle_failure(self, job: Job, error: ErrorInfo | None, started_at=None) -> None:
         error = error or ErrorInfo("UNKNOWN", "no error reported", retryable=True)
+
+        self.events.emit(
+            FAILED,
+            call_id=job.ref.call_id,
+            attempt=job.attempt,
+            error_code=error.code,
+            error_message=error.message,
+            retryable=error.retryable,
+            partition=job.message.partition,
+            offset=job.message.offset,
+            **self._labels,
+        )
 
         if error.retryable and job.attempt < self.config.retry_budget:
             self._schedule_retry(job, error)
@@ -283,6 +347,20 @@ class FunctionRunner:
         self.results.emit_failure(job, error, started_at=started_at)
         self.metrics.counter(DLQ, 1, reason=error.code, **self._labels)
         self.metrics.counter(PROCESSED, 1, status=Status.FAILED.name, **self._labels)
+        self.events.emit(
+            DEAD_LETTERED,
+            call_id=job.ref.call_id,
+            attempt=job.attempt,
+            error_code=error.code,
+            error_message=error.message,
+            retryable=error.retryable,
+            dlq_topic=self.config.dlq_topic,
+            # Where a replay would read the input from.
+            source_topic=job.message.topic,
+            source_partition=job.message.partition,
+            source_offset=job.message.offset,
+            **self._labels,
+        )
         self._complete(job)
 
     def _schedule_retry(self, job: Job, error: ErrorInfo) -> None:
@@ -298,6 +376,14 @@ class FunctionRunner:
         )
         self._retry_queue.append((self.clock.monotonic() + delay, retry))
         self.metrics.counter(RETRIES, 1, reason=error.code, **self._labels)
+        self.events.emit(
+            RETRY_SCHEDULED,
+            call_id=job.ref.call_id,
+            attempt=retry.attempt,
+            delay_seconds=delay,
+            error_code=error.code,
+            **self._labels,
+        )
         log.info(
             "retrying %s attempt=%d in %.1fs (%s)",
             job.ref.call_id,
@@ -337,8 +423,7 @@ class FunctionRunner:
                 tracked.job,
                 ErrorInfo(
                     TIMEOUT_CODE,
-                    f"exceeded per_file_timeout_seconds="
-                    f"{self.config.per_file_timeout_seconds}",
+                    f"exceeded per_file_timeout_seconds={self.config.per_file_timeout_seconds}",
                     retryable=True,
                 ),
             )

@@ -145,6 +145,22 @@ function SIGKILLed and a hydrator SIGTERMed mid-flight.
 - **The console** (`:8000`) — read-only, and the half Grafana is bad at: trace one
   `call_id` through its whole life, browse the DLQ's *contents* rather than its
   rate, see which declarations exist and whether they agree with the topics.
+- **Per-call events** — the SDK emits one event per lifecycle transition over
+  OTLP; a collector puts them in OpenSearch, and the console reads them. The
+  collector is the swap point: replacing OpenSearch is an exporter change in
+  `compose/init/otel-collector.yaml`, not an image rebuild.
+
+There is no results sink and there will not be one: Kafka is the sink, and some
+other service reads the results topic later. That makes log retention the de
+facto history of what the platform did, which is a product decision rather than
+an ops one — Kafka keeps 48h and the object store 24h.
+
+**Metrics and events answer different questions and neither substitutes for the
+other.** A metric cannot carry `call_id` — the label would multiply the series
+count by the number of calls — and a log pipeline drops lines under pressure by
+design, so §12's paging thresholds stay on the metrics path. Consumer lag in
+particular can never come from logs: it is the gap between a committed offset
+and a high water mark, which no pod is in a position to emit.
 
 Two things it deliberately does not do: edit declarations (§8's "one PR, zero
 infra tickets" only holds while git is the single source of truth) and replay,
@@ -169,6 +185,19 @@ pause or backfill (write paths need authentication and an audit trail first).
    hundred milliseconds. It now reads to the high water mark, which also took a
    call lookup from 20s to 4s because empty DLQ partitions stopped costing a
    poll timeout each.
+
+### What the log path turned up
+
+4. **Every event was stamped 1970-01-01.** `LogRecord(timestamp=None)` sends no
+   timestamp, and the backend then indexes at the epoch — so every time-range
+   query excluded everything and "most recent first" was arbitrary. Invisible
+   while events were only being counted; obvious the moment they were queried.
+5. **`event.name` comes back flat and is queried nested.** OpenSearch expands a
+   dotted field name into an object *in the mapping*, so a query uses
+   `attributes.event.name`, but `_source` returns the key exactly as indexed —
+   still flat, still containing a dot. Reading only the nested form failed
+   silently: the query matched, 25 events came back, and every one parsed as an
+   unknown event type, so a healthy call rendered as "does not exist".
 
 Also emitted for the first time: `faas.max_poll_exceeded`. `ConfluentConsumer`
 has always counted evictions and `kafka.py` said the number "belongs on a

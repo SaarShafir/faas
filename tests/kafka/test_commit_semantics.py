@@ -114,9 +114,7 @@ def _redelivered(bootstrap_servers, config, timeout=30):
     return offsets
 
 
-def test_an_unfinished_file_comes_back_after_a_restart(
-    bootstrap_servers, topic_factory, group_id
-):
+def test_an_unfinished_file_comes_back_after_a_restart(bootstrap_servers, topic_factory, group_id):
     """The out-of-order case: the last two finish, the first does not.
 
     Nothing may be committed, because committing anything past offset 0 would
@@ -197,9 +195,7 @@ def test_committing_the_highest_completed_offset_loses_files(
     assert _redelivered(bootstrap_servers, config) == []
 
 
-def test_the_committed_offset_is_the_next_one_to_read(
-    bootstrap_servers, topic_factory, group_id
-):
+def test_the_committed_offset_is_the_next_one_to_read(bootstrap_servers, topic_factory, group_id):
     """Kafka's convention, asserted directly rather than inferred.
 
     The ledger emits "next offset to consume"; librdkafka's commit takes the

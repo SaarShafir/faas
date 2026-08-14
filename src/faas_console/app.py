@@ -26,12 +26,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import declarations as declarations_module
+from .opensearch_reader import OpenSearchConsoleReader
 from .reader import KafkaConsoleReader
 
 log = logging.getLogger(__name__)
 
 HERE = os.path.dirname(__file__)
 GRAFANA_URL = os.environ.get("FAAS_GRAFANA_URL", "http://localhost:3000")
+
+# Where call-level questions are answered from. Kafka is the fallback and works
+# with no extra infrastructure; logs answer the same questions plus the ones
+# partition reads structurally cannot ("every call this tenant failed").
+EVENTS_URL = os.environ.get("FAAS_EVENTS_URL", "")
+EVENTS_INDEX = os.environ.get("FAAS_EVENTS_INDEX", "ss4o_logs-faas-local")
 
 app = FastAPI(title="FaaS console", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
@@ -49,10 +56,19 @@ def get_reader() -> KafkaConsoleReader:
     """
     global _reader
     if _reader is None:
-        _reader = KafkaConsoleReader(
+        kafka = KafkaConsoleReader(
             os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"),
             declarations=declarations_module.load_all(),
         )
+        # Fleet, topics and lint stay on Kafka either way: consumer lag is the
+        # gap between a committed offset and a high water mark, which is broker
+        # state that no pod can emit and therefore no log line can carry.
+        _reader = (
+            OpenSearchConsoleReader(EVENTS_URL, index=EVENTS_INDEX, kafka=kafka)
+            if EVENTS_URL
+            else kafka
+        )
+        log.info("reading calls from %s", "logs" if EVENTS_URL else "kafka")
     else:
         _reader.declarations = declarations_module.load_all()
     return _reader

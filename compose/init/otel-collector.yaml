@@ -1,0 +1,59 @@
+# The collector is the swap point.
+#
+# Runners speak OTLP and never learn where their events end up. OpenSearch is
+# the backend today; replacing it with Loki, Elasticsearch or a file is a change
+# to the `exporters` block below and a restart -- no image rebuild, no SDK
+# change, and nothing in the console's reader interface moves either.
+#
+# That indirection is the entire reason this process exists. Pointing ten
+# function images straight at OpenSearch would work and would also mean the
+# storage choice was baked into every one of them.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    # Events arrive at roughly 170/sec across ten functions at the spec's
+    # throughput. Batching is what keeps that from being 170 HTTP round trips.
+    timeout: 2s
+    send_batch_size: 512
+
+  memory_limiter:
+    # A collector that OOMs takes every function's telemetry with it, and it is
+    # downstream of the thing it is observing -- so it must shed load rather
+    # than die. Ordered first in the pipeline for that reason.
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+exporters:
+  opensearch:
+    http:
+      endpoint: http://opensearch:9200
+      tls:
+        insecure: true
+    # ss4o_logs-{dataset}-{namespace} is the index this produces.
+    dataset: faas
+    namespace: local
+
+  # Kept on purpose: when nothing shows up in the console, this says whether
+  # the events reached the collector at all, which is the first fork in the
+  # diagnosis.
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [opensearch, debug]

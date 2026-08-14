@@ -52,11 +52,21 @@ def _wav(seconds=2, rate=44100, channels=2, source="sine=frequency=440"):
     separator = ":" if "=" in source else "="
     return subprocess.run(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i", f"{source}{separator}sample_rate={rate}",
-            "-ac", str(channels),
-            "-t", str(seconds),
-            "-f", "wav", "pipe:1",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"{source}{separator}sample_rate={rate}",
+            "-ac",
+            str(channels),
+            "-t",
+            str(seconds),
+            "-f",
+            "wav",
+            "pipe:1",
         ],
         capture_output=True,
         check=True,
@@ -102,9 +112,7 @@ class Pipeline:
             in_flight=2,
             commit_interval_seconds=0.0,
         )
-        self.function_config = FunctionConfig.from_yaml(
-            "functions/duration_rms/function.yaml"
-        )
+        self.function_config = FunctionConfig.from_yaml("functions/duration_rms/function.yaml")
         object.__setattr__(self.function_config, "input_topic", INTERNAL_TOPIC)
         object.__setattr__(self.function_config, "results_topic", RESULTS_TOPIC)
         object.__setattr__(self.function_config, "commit_interval_seconds", 0.0)
@@ -165,9 +173,7 @@ class Pipeline:
                 partition=0,
                 offset=offset,
                 key=call_id.encode(),
-                value=json.dumps(
-                    {"call_id": call_id, "audio_id": f"audio-{call_id}"}
-                ).encode(),
+                value=json.dumps({"call_id": call_id, "audio_id": f"audio-{call_id}"}).encode(),
             )
         )
         self.hydrator_runner.run_once()
