@@ -4,6 +4,10 @@ You are deploying an audio function-as-a-service platform onto an OpenShift
 cluster in a closed network. This document assumes you have the repository, a
 shell, and `oc` logged in. It is written to be executed in order.
 
+If you are receiving this as a transferred bundle rather than a clone, read
+[`TRANSFER.md`](TRANSFER.md) first — it covers what did and did not come with it,
+and how the container images get in.
+
 Read [`faas-spec.md`](../faas-spec.md) once before starting. Section numbers
 (§4.2, §5.2) appear throughout the code and this guide, and they are the
 shortest path to understanding why something is built the way it is.
