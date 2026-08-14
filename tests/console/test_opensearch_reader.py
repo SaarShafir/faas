@@ -174,3 +174,54 @@ def test_an_unreachable_log_store_does_not_raise(reader):
     trace = r.find_call("call-1")
     assert trace.results == []
     assert not trace.hydrated
+
+
+# -- the hydrator is not a function ---------------------------------------
+
+
+def test_the_hydrators_completion_is_the_reference_not_a_result(reader):
+    """The hydrator is a runner too, so it emits the same events. Counting its
+    completion as a function's answer reports eleven results for ten
+    functions."""
+    reader.documents = [
+        _document("call.received", function_id="hydrator"),
+        _document("call.completed", function_id="hydrator", object_key="call-1.flac"),
+        _document("call.received", function_id="duration_rms"),
+        _document("call.completed", function_id="duration_rms", status="SUCCESS"),
+    ]
+
+    trace = reader.find_call("call-1")
+
+    assert trace.hydrated
+    assert trace.reference.object_key == "call-1.flac"
+    assert [r.function_id for r in trace.results] == ["duration_rms"]
+
+
+def test_the_hydrator_receiving_a_call_is_not_hydration(reader):
+    """A call that fails hydration still has a hydrator `call.received`.
+    Treating that as a reference reports a call as hydrated when no function
+    will ever see it -- and then blames the functions for not answering."""
+    reader.kafka.declarations = {"duration_rms": None, "energy_vad": None}
+    reader.documents = [
+        _document("call.received", function_id="hydrator"),
+        _document(
+            "call.dead_lettered",
+            function_id="hydrator",
+            error_code="AUDIO_NOT_FOUND",
+            dlq_topic="faas.dlq.hydrator",
+        ),
+    ]
+
+    trace = reader.find_call("call-1")
+
+    assert not trace.hydrated
+    assert trace.missing == []
+    assert [d.error_code for d in trace.dead_letters] == ["AUDIO_NOT_FOUND"]
+
+
+def test_a_function_receiving_a_call_proves_it_was_hydrated(reader):
+    """Belt and braces: if the hydrator's own event is missing -- dropped by
+    the pipeline, or aged out first -- a function holding the reference is
+    proof enough."""
+    reader.documents = [_document("call.received", function_id="duration_rms")]
+    assert reader.find_call("call-1").hydrated

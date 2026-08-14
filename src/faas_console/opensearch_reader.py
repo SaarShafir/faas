@@ -41,6 +41,10 @@ FAILED = "call.failed"
 RETRY_SCHEDULED = "call.retry_scheduled"
 DEAD_LETTERED = "call.dead_lettered"
 
+# Not a function: it is upstream of every topic a function reads, and its events
+# mean different things. See find_call.
+HYDRATOR = "hydrator"
+
 
 class OpenSearchConsoleReader:
     """Call questions from logs, broker questions from the broker."""
@@ -148,7 +152,40 @@ class OpenSearchConsoleReader:
             name = event.get("event_name", "")
             function_id = event.get("function_id", "")
 
+            # The hydrator is a runner like any other, so it emits the same
+            # events -- and conflating it with a function gets two things
+            # wrong. Its `call.received` means it picked the source record up,
+            # not that the call was hydrated: a call that fails hydration has
+            # one too. And its `call.completed` is the reference being
+            # published, not a function's answer, so counting it as a result
+            # reports eleven results for ten functions.
+            #
+            # Hydration is therefore the hydrator *completing*, and only
+            # functions produce results.
+            if function_id == HYDRATOR:
+                if name == COMPLETED:
+                    reference = Reference(
+                        call_id=call_id,
+                        object_key=event.get("object_key", ""),
+                        sample_rate=int(event.get("sample_rate", 16000) or 16000),
+                        channels=1,
+                        duration_seconds=float(event.get("duration_seconds", 0) or 0),
+                        ingested_at=None,
+                        hydrated_at=None,
+                        partition=int(event.get("partition", -1) or -1),
+                        offset=int(event.get("offset", -1) or -1),
+                    )
+                elif name == DEAD_LETTERED:
+                    # Hydration failed outright. §5.4's "emit both" does not
+                    # apply upstream of every topic a consumer reads, so this
+                    # dead letter is the only record the call ever existed.
+                    dead.append(_dead_letter(event))
+                continue
+
             if name == RECEIVED and reference is None:
+                # A function receiving the call proves a reference was
+                # published, even if the hydrator's own event is missing --
+                # dropped by the log pipeline, or aged out before it.
                 reference = Reference(
                     call_id=call_id,
                     object_key=event.get("object_key", ""),
