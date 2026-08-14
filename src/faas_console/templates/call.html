@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Trace &middot; FaaS console{% endblock %}
+
+{% block content %}
+<h1>Trace a call</h1>
+
+<form method="get" action="/call" class="search">
+  <input type="text" name="call_id" value="{{ call_id }}" placeholder="call_id" autofocus
+         spellcheck="false" autocomplete="off">
+  <button type="submit">Trace</button>
+</form>
+
+{% if trace %}
+  <section class="summary">
+    <div class="stat {% if trace.hydrated %}good{% else %}bad{% endif %}">
+      <span class="label">Hydrated</span>
+      <span class="value">{{ "yes" if trace.hydrated else "no" }}</span>
+    </div>
+    <div class="stat {% if trace.complete %}good{% else %}warn{% endif %}">
+      <span class="label" title="No aggregator exists yet (§7), so this is the console deciding for itself whether every declared function has answered.">Complete</span>
+      <span class="value">{{ "yes" if trace.complete else "no" }}</span>
+    </div>
+    <div class="stat">
+      <span class="label">Results</span>
+      <span class="value">{{ trace.results | length }}</span>
+    </div>
+    <div class="stat">
+      <span class="label">Dead letters</span>
+      <span class="value">{{ trace.dead_letters | length }}</span>
+    </div>
+    <div class="stat">
+      <span class="label">Lookup</span>
+      <span class="value">{{ trace.scan_seconds }}s</span>
+    </div>
+  </section>
+
+  <p class="hint">
+    Read {{ trace.partitions_scanned | join(", ") }} &mdash; targeted, not scanned.
+    Results and references are both partitioned on <code>call_id</code> alone
+    (§6, §4.2) so the aggregator needs no shuffle, and a lookup inherits that.
+  </p>
+
+  {% if not trace.hydrated %}
+    <p class="callout bad">
+      No reference on the internal topic. A call that fails hydration is invisible
+      downstream &mdash; no reference means no function ever sees it, and the
+      aggregator would never expect it either. Check
+      <a href="/dlq?topic=faas.dlq.hydrator">the hydrator's DLQ</a>.
+    </p>
+  {% endif %}
+
+  {% if trace.duration_disagreement is not none and trace.duration_disagreement | abs > 1 %}
+    <p class="callout warn">
+      Measured duration disagrees with the reference by
+      {{ "%.1f"|format(trace.duration_disagreement) }}s. A truncated upload
+      hydrates <em>successfully</em> into a FLAC of the wrong length &mdash; ffmpeg
+      resyncs and returns what survived &mdash; so this disagreement is the only
+      signal that it happened.
+    </p>
+  {% endif %}
+
+  {% if trace.reference %}
+    <section>
+      <h2>Reference</h2>
+      <table class="kv">
+        <tr><th>Object key</th><td><code>{{ trace.reference.object_key }}</code></td></tr>
+        <tr><th>Duration</th><td>{{ "%.1f"|format(trace.reference.duration_seconds) }}s</td></tr>
+        <tr><th>Format</th><td>{{ trace.reference.sample_rate }} Hz, {{ trace.reference.channels }} ch</td></tr>
+        <tr><th>Ingested</th><td>{{ trace.reference.ingested_at or "—" }}</td></tr>
+        <tr><th>Hydrated</th><td>{{ trace.reference.hydrated_at or "—" }}</td></tr>
+        <tr><th>Position</th><td class="subtle">partition {{ trace.reference.partition }}, offset {{ trace.reference.offset }}</td></tr>
+      </table>
+    </section>
+  {% endif %}
+
+  <section>
+    <h2>Results</h2>
+    {% if trace.results %}
+      <table>
+        <thead>
+          <tr>
+            <th>Function</th><th>Status</th><th class="num">Attempt</th>
+            <th class="num">Latency</th><th class="num">Processing</th><th>Payload</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for result in trace.results %}
+            <tr>
+              <td>
+                <code>{{ result.function_id }}</code>
+                <span class="subtle">{{ result.function_version }}</span>
+              </td>
+              <td><span class="badge status-{{ result.status | lower }}">{{ result.status }}</span></td>
+              <td class="num {% if result.attempt > 1 %}warn{% endif %}">{{ result.attempt }}</td>
+              <td class="num">{% if result.latency_seconds %}{{ "%.1f"|format(result.latency_seconds) }}s{% else %}—{% endif %}</td>
+              <td class="num">{% if result.process_seconds %}{{ "%.2f"|format(result.process_seconds) }}s{% else %}—{% endif %}</td>
+              <td>
+                {% if result.error_code %}
+                  <span class="badge error">{{ result.error_code }}</span>
+                  <span class="subtle">{{ result.error_message }}</span>
+                {% elif result.payload_ref %}
+                  <span class="subtle" title="Over 256 KB, so the payload is a claim check (§6)">
+                    s3: <code>{{ result.payload_ref }}</code>
+                  </span>
+                {% elif result.payload %}
+                  <details>
+                    <summary>{{ result.payload | length }} bytes</summary>
+                    <pre>{{ result.payload.decode("utf-8", "replace") }}</pre>
+                  </details>
+                {% else %}
+                  <span class="subtle">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">No results on the topic for this call.</p>
+    {% endif %}
+  </section>
+
+  {% if trace.missing %}
+    <section>
+      <h2>Missing</h2>
+      <p class="hint">
+        Declared functions that produced neither a result nor a dead letter.
+        Until §7's aggregator and its <code>call_complete</code> marker exist,
+        this is the manual version of that question &mdash; and a function that is
+        simply behind looks identical to one that lost the call.
+      </p>
+      <ul class="chips">
+        {% for name in trace.missing %}<li class="chip warn">{{ name }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if trace.dead_letters %}
+    <section>
+      <h2>Dead letters</h2>
+      <table>
+        <thead><tr><th>Function</th><th>Code</th><th class="num">Attempt</th><th>Retryable</th><th>Source</th><th>When</th></tr></thead>
+        <tbody>
+          {% for dead in trace.dead_letters %}
+            <tr>
+              <td><code>{{ dead.function_id or dead.topic }}</code></td>
+              <td><span class="badge error">{{ dead.error_code }}</span></td>
+              <td class="num">{{ dead.attempt }}</td>
+              <td>{{ "yes" if dead.retryable else "no" }}</td>
+              <td class="subtle"><code>{{ dead.source_topic }}[{{ dead.source_partition }}]@{{ dead.source_offset }}</code></td>
+              <td class="subtle">{{ dead.failed_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
+  <p class="hint"><a href="/api/call/{{ trace.call_id }}">This trace as JSON</a></p>
+
+{% elif call_id %}
+  <p class="empty">Nothing found for <code>{{ call_id }}</code>.</p>
+{% endif %}
+{% endblock %}

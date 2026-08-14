@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Overview &middot; FaaS console{% endblock %}
+
+{% block content %}
+<h1>Overview</h1>
+
+{% if findings %}
+  <section class="findings">
+    <h2>Config lint</h2>
+    <p class="hint">
+      Checks that fail at run time rather than at startup. The SDK computes each
+      result's partition itself and passes it explicitly, so a declaration that
+      claims more partitions than the topic has does not fail at boot &mdash; it
+      fails when the first result is produced.
+    </p>
+    <ul>
+      {% for finding in findings %}
+        <li class="finding {{ finding.severity }}">
+          <span class="badge {{ finding.severity }}">{{ finding.severity }}</span>
+          <strong>{{ finding.subject }}</strong>
+          <span>{{ finding.message }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+{% else %}
+  <p class="ok-banner">Config lint is clean &mdash; every declaration agrees with the topics it points at.</p>
+{% endif %}
+
+<section>
+  <h2>Consumer groups</h2>
+  <p class="hint">
+    One row per <code>(function, version)</code> &mdash; that is the consumer
+    group (§4.3) and the unit of isolation. One function with a backlog while the
+    others sit at zero is the platform working as designed, not an outage.
+    Rates, histograms and §12's alert thresholds live in
+    <a href="{{ grafana }}/d/faas-fleet" target="_blank" rel="noreferrer">Grafana</a>.
+  </p>
+
+  {% if groups %}
+    <table>
+      <thead>
+        <tr>
+          <th>Group</th>
+          <th>State</th>
+          <th class="num">Backlog</th>
+          <th class="num">Uncommitted partitions</th>
+          <th>Declared</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for group in groups %}
+          <tr>
+            <td><code>{{ group.group_id }}</code></td>
+            <td>{{ group.state }}</td>
+            <td class="num {% if group.lag > 0 %}warn{% endif %}">{{ group.lag }}</td>
+            <td class="num subtle" title="Partitions this group has never committed on. Normal on a topic with far more partitions than traffic.">
+              {{ group.partitions_uncommitted }}
+            </td>
+            <td>
+              {% if group.function_id in declarations %}
+                <a href="/registry#{{ group.function_id }}">yes</a>
+              {% else %}
+                <span class="badge warning">no declaration</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">No consumer groups &mdash; either nothing is running, or the broker is unreachable.</p>
+  {% endif %}
+</section>
+
+{% if undeclared or not_running %}
+  <section>
+    <h2>Drift</h2>
+    <div class="cols">
+      {% if undeclared %}
+        <div>
+          <h3>Running without a declaration</h3>
+          <p class="hint">A group nobody can point at a <code>function.yaml</code>. §10 needs every version that ever ran to be knowable.</p>
+          <ul>{% for name in undeclared %}<li><code>{{ name }}</code></li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      {% if not_running %}
+        <div>
+          <h3>Declared but not running</h3>
+          <p class="hint">Either not deployed, or deployed and dead. The DLQ and the metrics say which.</p>
+          <ul>{% for name in not_running %}<li><code>{{ name }}</code></li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endif %}
+{% endblock %}

@@ -84,6 +84,26 @@ ENV FAAS_DECLARATION=/app/hydrator.yaml
 CMD ["faas-hydrator"]
 
 
+# -- the console ----------------------------------------------------------
+#
+# Read-only, so it needs no credentials beyond a broker address. It reads the
+# declarations from the same `functions/` tree the function images carry, which
+# is what keeps its idea of a declaration identical to the runner's.
+
+FROM base AS console
+
+USER root
+RUN pip install --no-cache-dir ".[console]"
+USER 1001:0
+
+COPY hydrator.yaml ./hydrator.yaml
+
+ENV FAAS_FUNCTIONS_DIR=/app/functions     FAAS_HYDRATOR_DECLARATION=/app/hydrator.yaml
+
+EXPOSE 8000
+CMD ["uvicorn", "faas_console.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
 # -- the stress harness ---------------------------------------------------
 #
 # Corpus generator, Audio API stub, seeder, monitor. Needs ffmpeg to build the

@@ -17,6 +17,7 @@ Last updated: 2026-08-14.
 | 3 | Hydrator | **done** |
 | 4 | One trivial reference function, end to end | **done** |
 | — | Ten functions on a local stack that mimics production | **done** |
+| — | Metrics, dashboards and a read-only console | **done** |
 | 5 | Results sink service | not started |
 | 6 | Autoscaling on lag | not started |
 | 7 | Aggregator + `call_complete` | not started |
@@ -135,6 +136,44 @@ function SIGKILLed and a hydrator SIGTERMed mid-flight.
   `Producer terminating with 1 message still in queue`. Whatever the crash, the
   shutdown path should flush.
 
+## Monitoring
+
+`compose/` now brings up Prometheus, Grafana and a console alongside the stack.
+
+- **Grafana** (`:3000`) — fleet and per-function dashboards, provisioned from
+  JSON in the repo, plus §12's alert rules at 1h and 3h.
+- **The console** (`:8000`) — read-only, and the half Grafana is bad at: trace one
+  `call_id` through its whole life, browse the DLQ's *contents* rather than its
+  rate, see which declarations exist and whether they agree with the topics.
+
+Two things it deliberately does not do: edit declarations (§8's "one PR, zero
+infra tickets" only holds while git is the single source of truth) and replay,
+pause or backfill (write paths need authentication and an audit trail first).
+
+### What this turned up
+
+1. **The §5.5 metrics were going nowhere.** `OTelMetrics` was implemented and
+   never instantiated: `bootstrap.py` defaulted to `NullMetrics`, no image
+   installed the `metrics` extra, and there was no Prometheus. Every runner had
+   been computing lag, latency, realtime multiple, DLQ rate, in-flight depth and
+   retry count and discarding all of it. `metrics.from_env` fixes it, with
+   `NullMetrics` still the default.
+2. **kafka-exporter reports lag as -1 for uncommitted partitions.** Its encoding
+   of "unknown", not a measurement. On a 200-partition topic most partitions are
+   empty on any given run, so a naive sum goes negative — and a negative backlog
+   never crosses 3600, so every lag alert would have sat silently at zero for
+   ever. Clamped in the recording rules and in the console's `fleet()`.
+3. **The console's first scan implementation could truncate a trace.** Treating a
+   `None` poll as end-of-partition conflates "no more records" with "the
+   assignment is not ready yet", and the second is normal for the first few
+   hundred milliseconds. It now reads to the high water mark, which also took a
+   call lookup from 20s to 4s because empty DLQ partitions stopped costing a
+   poll timeout each.
+
+Also emitted for the first time: `faas.max_poll_exceeded`. `ConfluentConsumer`
+has always counted evictions and `kafka.py` said the number "belongs on a
+dashboard next to consumer lag"; nothing carried it out of the process.
+
 ## Decisions worth knowing about
 
 **The hydrator runs on the SDK's runner, not its own loop.** A transcode is
@@ -245,6 +284,13 @@ dropping `-ar` from the transcoder fails 10.
   field added by a newer producer survives the read but not a re-encode. Fine for
   the SDK — the runner only decodes references and only encodes results it built
   — but anything proxying a message must work on the protobuf object.
+- **`test_the_slow_function_burns_roughly_what_it_promises` is timing-sensitive.**
+  It failed once during a full-suite run on 2026-08-14 while the compose stack --
+  including a CPU-burning `slow_burner` container -- was running on the same
+  machine, and passed on every run since, in isolation and in the full suite.
+  It asserts on wall-clock work, so it is inherently contention-sensitive.
+  Recorded rather than papered over: the next time it fails, the useful thing is
+  knowing it has happened before and under what conditions.
 - **The broker suite takes ~4min**, dominated by idle-detection waits in the
   redelivery helpers. Worth tightening if it becomes a CI annoyance.
 - **OpenShift gotchas (§11) are unaddressed.** No Dockerfiles yet. The random-UID

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Registry &middot; FaaS console{% endblock %}
+
+{% block content %}
+<h1>Registry</h1>
+
+<p class="hint">
+  Declarations from git, joined against the consumer groups actually running.
+  The console never edits these &mdash; §8's "one PR and zero infra tickets" only
+  holds while <code>function.yaml</code> is the single source of truth, and a UI
+  that could change it would be a second one.
+</p>
+
+<p class="callout warn">
+  <strong>This is a stopgap, and it should be replaced.</strong> §7 needs a
+  registry of <em>active</em> functions for the aggregator to know the expected
+  set, and §10 needs every <code>(function, version)</code> that <em>ever ran</em>
+  so erasure can tombstone all of them. This page derives both from what is
+  running right now, and consumer groups expire &mdash; so the historical half is
+  wrong the moment a version is retired. Deriving it is not the same as keeping
+  it, and only the latter satisfies §10.
+</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Function</th><th>Version</th><th>Running</th>
+      <th class="num">In flight</th><th class="num">Timeout</th><th class="num">Retries</th>
+      <th>DLQ</th><th>Declaration</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+      <tr id="{{ row.config.function_id }}">
+        <td><code>{{ row.config.function_id }}</code></td>
+        <td>{{ row.config.function_version }}</td>
+        <td>
+          {% if row.group %}
+            <span class="badge good">yes</span>
+            {% if row.group.lag %}<span class="subtle">{{ row.group.lag }} behind</span>{% endif %}
+          {% else %}
+            <span class="badge warning">no group</span>
+          {% endif %}
+        </td>
+        <td class="num">{{ row.config.in_flight }}</td>
+        <td class="num">{{ row.config.per_file_timeout_seconds }}s</td>
+        <td class="num">{{ row.config.retry_budget }}</td>
+        <td><a href="/dlq?topic={{ row.config.dlq_topic }}"><code>{{ row.config.dlq_topic }}</code></a></td>
+        <td class="subtle">{% if row.path %}<code>{{ row.path }}</code>{% else %}—{% endif %}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<section>
+  <h2>Topics</h2>
+  <p class="hint">
+    Partition counts are load-bearing: the SDK computes each result's partition
+    with murmur2 over <code>call_id</code> and passes it explicitly, so a topic
+    with fewer partitions than a declaration claims fails when the first result
+    is produced &mdash; not at startup. The overview's lint checks exactly this.
+  </p>
+  <table>
+    <thead><tr><th>Topic</th><th class="num">Partitions</th></tr></thead>
+    <tbody>
+      {% for topic in topics %}
+        <tr><td><code>{{ topic.name }}</code></td><td class="num">{{ topic.partitions }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -337,6 +337,24 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
 
+  console:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: console
+    image: faas-console:local
+    profiles: [stack]
+    depends_on:
+      topics: {condition: service_completed_successfully}
+    restart: unless-stopped
+    ports: ["8000:8000"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Linked, not embedded: time series belong in Grafana and the console
+      # does not reimplement them.
+      FAAS_GRAFANA_URL: http://localhost:3000
+      FAAS_LOG_LEVEL: ${FAAS_LOG_LEVEL:-INFO}
+
   # -- the harness ---------------------------------------------------------
   #
   # Both are one-shot: `run --rm`, not `up`. They drive and measure the stack

@@ -30,6 +30,20 @@ python -m stress.chaos --service spectral-centroid --signal SIGKILL
 python -m stress.chaos --service hydrator --signal SIGTERM
 ```
 
+## Watch it
+
+| | |
+|---|---|
+| Console | <http://localhost:8000> — trace a call, browse the DLQ, config lint |
+| Grafana | <http://localhost:3000> — fleet and per-function dashboards |
+| Prometheus | <http://localhost:9090> — targets, rules, raw queries |
+
+The console is read-only by design and reads Kafka directly, so a call lookup is
+two targeted partition reads rather than a topic scan: results and references are
+both partitioned on `call_id` alone (§6, §4.2). `GET /api/lint` returns non-zero
+`ok` when a declaration disagrees with the topics it points at, which makes it a
+usable smoke test after any topic change.
+
 Tear down with `docker compose --profile stack down -v`.
 
 ## Your own audio

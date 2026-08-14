@@ -1,0 +1,39 @@
+{# Server-rendered, no build step, no framework. The console is a handful of
+   tables over data that changes when you reload it; a bundler and a client-side
+   router would be more machinery than the thing they serve. #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}FaaS console{% endblock %}</title>
+  <link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+  <header>
+    <nav>
+      <a class="brand" href="/">FaaS <span>console</span></a>
+      <a href="/">Overview</a>
+      <a href="/call">Trace a call</a>
+      <a href="/dlq">Dead letters</a>
+      <a href="/registry">Registry</a>
+      <a class="external" href="{{ grafana }}/d/faas-fleet" target="_blank" rel="noreferrer">
+        Metrics &rarr;
+      </a>
+    </nav>
+    <p class="readonly" title="Every runtime action needs auth and an audit trail first, and declarations belong to git (§8).">read-only</p>
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    <p>
+      Reads Kafka directly &mdash; there is no results sink yet (build-order step 5).
+      Call lookups are one partition each, because §6 partitions results on
+      <code>call_id</code> alone.
+    </p>
+  </footer>
+</body>
+</html>

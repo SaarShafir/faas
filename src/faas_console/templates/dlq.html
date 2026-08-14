@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Dead letters &middot; FaaS console{% endblock %}
+
+{% block content %}
+<h1>Dead letters</h1>
+
+<p class="hint">
+  The DLQ holds the <em>input message</em>, byte for byte, so a fixed function
+  version can replay it (§5.4). Everything describing the failure is in the
+  headers, which is what this table is. Replay is not here yet: it is a write
+  path, and write paths need authentication and an audit trail first.
+</p>
+
+<form method="get" action="/dlq" class="filters">
+  <select name="topic" onchange="this.form.submit()">
+    <option value="">all topics</option>
+    {% for name in topics %}
+      <option value="{{ name }}" {% if name == selected %}selected{% endif %}>{{ name }}</option>
+    {% endfor %}
+  </select>
+  <noscript><button type="submit">Filter</button></noscript>
+</form>
+
+{% if by_code %}
+  <ul class="chips">
+    {% for code, count in by_code %}
+      <li class="chip"><strong>{{ code }}</strong> {{ count }}</li>
+    {% endfor %}
+  </ul>
+{% endif %}
+
+{% if records %}
+  <table>
+    <thead>
+      <tr>
+        <th>When</th><th>Function</th><th>Code</th><th>Message</th>
+        <th class="num">Attempt</th><th>Retryable</th><th>Replay source</th><th>Call</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for record in records %}
+        <tr>
+          <td class="subtle">{{ record.failed_at[:19] }}</td>
+          <td><code>{{ record.function_id or record.topic }}</code></td>
+          <td><span class="badge error">{{ record.error_code }}</span></td>
+          <td class="message">{{ record.error_message }}</td>
+          <td class="num">{{ record.attempt }}</td>
+          <td>
+            {% if record.retryable %}
+              <span class="subtle" title="Retryable, but the budget was spent">budget spent</span>
+            {% else %}
+              <span class="subtle" title="Poison: straight to the DLQ on the first attempt, no retries burned">poison</span>
+            {% endif %}
+          </td>
+          <td class="subtle" title="What a replay would re-read: {{ record.body_bytes }} bytes of original input.">
+            <code>{{ record.source_topic }}[{{ record.source_partition }}]@{{ record.source_offset }}</code>
+          </td>
+          <td>
+            {% if record.call_id %}
+              <a href="/call?call_id={{ record.call_id }}">trace</a>
+            {% else %}
+              <span class="subtle">—</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="empty">
+    No dead letters. Worth noting that this is not automatically good news:
+    a DLQ that has never been written to is a DLQ that has never been tested.
+  </p>
+{% endif %}
+{% endblock %}

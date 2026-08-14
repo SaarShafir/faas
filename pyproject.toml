@@ -26,6 +26,15 @@ hydrator = [
 ]
 # Set FAAS_METRICS=prometheus to use these; without the extra installed the SDK
 # falls back to NullMetrics and logs why, rather than failing to boot.
+# The console (src/faas_console). Read-only, server-rendered, no build step --
+# jinja2 renders the templates and uvicorn serves them.
+console = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+    "confluent-kafka>=2.5",
+    "PyYAML>=6.0",
+]
 metrics = [
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",
@@ -51,7 +60,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # `faas` is the generated protobuf tree (proto package faas.v1), committed so a
 # function image build never needs protoc.
-packages = ["src/faas_sdk", "src/faas_hydrator", "src/faas"]
+packages = ["src/faas_sdk", "src/faas_hydrator", "src/faas_console", "src/faas"]
 
 [project.scripts]
 faas-hydrator = "faas_hydrator.main:main"
