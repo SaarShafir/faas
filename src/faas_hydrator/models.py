@@ -26,7 +26,7 @@ class SourceRecord:
 
     @property
     def duration_seconds(self) -> float:
-        """Unknown until the transcode has run.
+        """Unknown until the fetch has happened and the header has been read.
 
         The runner reads this to emit throughput-vs-realtime (§5.5); reporting
         zero means the hydrator simply does not publish that metric, which is

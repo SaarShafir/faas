@@ -24,9 +24,10 @@ Audio API ──► hydrator ──► faas.audio.internal ──► 10 function
                  └──► object store (FLAC)               └──► faas.dlq.<function>
 ```
 
-- **The hydrator** fetches source audio, transcodes it to canonical FLAC
-  (16 kHz mono), puts it in the object store, and publishes a *reference* —
-  never the audio — to an internal topic (§4.1, §4.2).
+- **The hydrator** fetches source audio — canonical FLAC (16 kHz mono) already,
+  encoding being settled upstream of the Audio API — puts it in the object
+  store as-is, and publishes a *reference* — never the audio — to an internal
+  topic (§4.1, §4.2).
 - **Ten functions** each consume that topic as an independent consumer group,
   fetch the FLAC, compute something, and publish a `Result` (§4.3, §6).
 - **The console** is a read-only web UI over all of it, optionally with

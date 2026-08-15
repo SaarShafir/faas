@@ -52,9 +52,10 @@ Tear down with `docker compose --profile stack down -v`.
 
 ## Your own audio
 
-Drop files into `samples/` and re-run the corpus service. They join the corpus
-at whatever rate and format they already are — no transcoding, no normalising,
-because whatever is odd about a real recording is the reason it is worth having.
+Drop canonical FLAC files into `samples/` and re-run the corpus service. They
+join the corpus verbatim — no re-encoding, no normalising, because whatever is
+odd about a real recording is the reason it is worth having, and the Audio API
+would have handed it over untouched too.
 
 ```bash
 docker compose run --rm corpus
@@ -120,7 +121,7 @@ is a bind mount here. The same applies to a PVC in a pod unless it sets
 
 | | |
 |---|---|
-| `stress/corpus.py` | generates the corpus with ffmpeg; picks up `samples/` |
+| `stress/corpus.py` | generates the corpus with ffmpeg as canonical FLAC; picks up `samples/` |
 | `stress/audio_api.py` | serves it over the §4.1 contract, with fault injection |
 | `stress/seed.py` | publishes call records at a target rate, records what it sent |
 | `stress/monitor.py` | consumes results and every DLQ; accounting, latency, lag |

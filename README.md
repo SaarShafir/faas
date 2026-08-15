@@ -5,8 +5,11 @@ audio function inherits, the protobuf schemas it speaks, the hydrator that
 feeds it, and the reference function that proves the path end to end. The
 results sink, autoscaling, the aggregator and the deletion path come after this.
 
-Requires `ffmpeg` on PATH. Without it the transcode and contract tests skip
-rather than fail — but they are the ones worth having, so install it.
+Nothing here encodes audio: the Audio API serves canonical FLAC and the
+hydrator stores what it is given. `ffmpeg` on PATH is still worth having — the
+contract test and the stress corpus use it to *make* input, standing in for
+whatever encodes calls upstream — and without it those tests skip rather than
+fail.
 
 ```bash
 python -m venv .venv && ./.venv/Scripts/python -m pip install -e ".[dev]"
@@ -59,11 +62,17 @@ suite runs in under a second.
 
 ## The hydrator
 
-`src/faas_hydrator/` — §4.1. Parse metadata, GET audio by id, transcode to
-canonical FLAC, PUT to `{call_id}.flac`, publish the reference, commit.
+`src/faas_hydrator/` — §4.1. Parse metadata, GET audio by id, PUT those bytes
+to `{call_id}.flac`, publish the reference, commit.
 
-It runs on the SDK's runner rather than its own loop. A transcode is seconds of
-work between polls, so it has the same §5.2 problem a function does, and
+There is no transcode step: encoding to canonical FLAC happens upstream of the
+Audio API, so the hydrator stores exactly what it fetched. That leaves it with
+no codec, no subprocess and no scratch files — an HTTP GET, an S3 PUT, and a
+34-byte header read to fill in the reference.
+
+It runs on the SDK's runner rather than its own loop. Fetching a 5 MB file and
+storing it again is seconds of work between polls, so it has the same §5.2
+problem a function does, and
 growing a second copy of the hardest code in the system to solve it twice would
 be the wrong trade. Only the two ends differ: `JsonSourceDecoder` replaces the
 reference decoder, and `ReferenceEmitter` publishes to the internal topic
@@ -81,12 +90,14 @@ Two ordering rules hold the pipeline together, both tested:
   A crash in between replays the call, and the deterministic key makes that
   harmless.
 
-`Transcoder` verifies what ffmpeg actually produced by reading the FLAC
-STREAMINFO header, rather than trusting the flags it passed. That catches the
-non-seekable-output bug for free: ffmpeg writing to a pipe cannot seek back to
-patch `total_samples`, so the reference would claim every call is 0 seconds
-long. Both ends therefore go through files, not pipes — which is also what makes
-formats needing a header seek (MP4's moov atom) work at all.
+The reference's sample rate, channel count and duration are read out of the
+FLAC STREAMINFO header of the bytes that were actually fetched, rather than
+assumed from what canonical form is supposed to be. Anything that is not
+canonical FLAC — an upstream error page, a header with no `total_samples`, a
+44.1 kHz stereo file — is poison on the first attempt: the Audio API will
+return the same bytes on the third, so retrying only delays the DLQ and burns
+quota. That check is the one place an upstream encoding regression is caught
+before it becomes every function's problem at once.
 
 ## The reference function, and the contract test
 
@@ -98,8 +109,8 @@ literal.
 
 `tests/functions/test_contract.py` is the part that matters. The spec says not
 to build functions 2..N until step 4 is stable and calls the reference function
-the contract test, so it runs the real thing: real ffmpeg transcoding real
-audio, a real object-store round trip, real libsndfile decoding, the real
+the contract test, so it runs the real thing: real encoded audio off a fake
+Audio API, a real object-store round trip, real libsndfile decoding, the real
 protobuf wire format, and both runners with their real ledgers and DLQ routing.
 Only Kafka and S3 are fakes, and both are fakes of interfaces the SDK owns. The
 hydrator's output bytes are fed to the function verbatim, so any disagreement
@@ -108,8 +119,7 @@ about the wire format surfaces there.
 A call goes in as an Audio API response and comes out as a `Result`, and the
 measurements match what went in — checked twice over: against a signal of
 stated amplitude (exact), and against the decoded input itself (fidelity across
-44.1 kHz stereo WAV → 16 kHz mono FLAC → S3 → libsndfile). Dropping `-ar` from
-the transcoder fails ten of these.
+Audio API → S3 → libsndfile, byte-for-byte now that nothing re-encodes).
 
 ## The three things this exists to get right
 
@@ -191,8 +201,9 @@ These found three things the fakes could not:
    `ProcessWorkerPool`, which is why `run()` takes the function *class* rather
    than an instance: the worker constructs its own, so weights and clients are
    never pickled across. The hydrator keeps an inline pool deliberately — its
-   work is bounded by ffmpeg's own subprocess timeout, so the block is provably
-   inside `max.poll.interval.ms`, whereas a function's timeout is enforced
+   work is one HTTP GET and one S3 PUT, each under its own client timeout, so
+   the block is provably inside `max.poll.interval.ms`, whereas a function's
+   timeout is enforced
    *between* poll iterations and so cannot fire while inline work blocks.
 3. **The murmur2 test was comparing against the wrong hash.** The implementation
    was right; the test used librdkafka's `consistent` partitioner, which is

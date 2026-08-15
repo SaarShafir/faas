@@ -43,10 +43,9 @@ Kafka throughput is a non-issue at 17 msg/sec. Every sizing decision below is ab
          │
          ▼
    ┌───────────┐   get-by-id    ┌──────────┐
-   │ Hydrator  │───────────────▶│ Audio API│
+   │ Hydrator  │───────────────▶│ Audio API│  (serves canonical FLAC)
    └───────────┘                └──────────┘
-         │  transcode → FLAC
-         │  PUT {call_id}.flac
+         │  PUT {call_id}.flac, unchanged
          ▼
    ┌───────────────┐
    │  S3 (24h TTL) │◀──────────┐
@@ -81,19 +80,25 @@ never be the bottleneck. Keep it dumb.
 
 Per message:
 1. Parse metadata, extract audio id.
-2. `GET` audio by id from the Audio API.
-3. Transcode to canonical FLAC via ffmpeg: **16 kHz, 16-bit, mono, compression level 0–3.**
-   Decode speed is compression-level-independent; higher levels only cost encode CPU for a
-   few percent of size. Do not pay it.
-4. `PUT` to S3 at deterministic key `{call_id}.flac`.
-5. Publish reference to the internal topic.
+2. `GET` audio by id from the Audio API, which serves canonical FLAC —
+   **16 kHz, 16-bit, mono** — already. Encoding happens upstream of this
+   platform; the hydrator does not transcode.
+3. Verify the fetched bytes are canonical FLAC by reading the STREAMINFO
+   header (sample rate, channels, bit depth, a known duration). Anything else
+   is poison, not a retry: the Audio API will return the same bytes on the
+   third attempt, and this is the one place an upstream encoding regression is
+   caught before it reaches every function at once.
+4. `PUT` those bytes, unchanged, to S3 at deterministic key `{call_id}.flac`.
+5. Publish reference to the internal topic, with sample rate/channels/duration
+   read from the same STREAMINFO header rather than assumed.
 6. Commit offset.
 
 **Do not embed metadata in FLAC tags.** Metadata lives in the Kafka reference only. One source
 of truth; the metadata schema can evolve without rewriting objects.
 
-Input formats will be a zoo — ffmpeg in the hydrator handles that. The SDK only ever decodes
-canonical FLAC via `soundfile`/libsndfile.
+The SDK only ever decodes canonical FLAC via `soundfile`/libsndfile, and now
+nothing in this platform produces any other form: whatever zoo of input
+formats a call started as, upstream of the Audio API is where it stops.
 
 ### 4.2 Internal topic
 
@@ -345,7 +350,7 @@ derived output. **This is genuinely awful to retrofit — design it in now.**
 | Object store | S3-compatible; lifecycle rule for 24h TTL — do not write a reaper |
 | Schema | Protobuf + Buf |
 | Audio decode (SDK) | `soundfile` / libsndfile |
-| Audio transcode (hydrator) | ffmpeg |
+| Audio encode (upstream of the Audio API — not this platform) | ffmpeg or equivalent |
 | Metrics | OpenTelemetry → Prometheus + Grafana (enable OpenShift user workload monitoring; off by default) |
 | Packaging | One base image with SDK preinstalled; `uv` for deps. Function image = base + algorithm |
 
@@ -356,7 +361,7 @@ notices. Without it, replica counts are hand-tuned per function forever.
 ### OpenShift gotchas — these will bite on first deploy
 
 1. **Random UID.** The default SCC runs containers as an arbitrary UID, not the Dockerfile's.
-   Anything writing a scratch path — ffmpeg temp files, model caches, HuggingFace's `~/.cache` —
+   Anything writing a scratch path — the console sandbox's temp files, model caches, HuggingFace's `~/.cache` —
    fails unless the directory is group-writable by GID 0. Set `HF_HOME` explicitly to an
    emptyDir, and in the image: `chgrp -R 0 /path && chmod -R g=u /path`. This breaks
    approximately every ML container.

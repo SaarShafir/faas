@@ -2,12 +2,13 @@
 
 The hydrator publishes sample_rate, channels and duration in the reference
 (§4.2), and every downstream function trusts those numbers without re-deriving
-them. Reading them back out of the bytes ffmpeg actually produced -- rather than
-echoing the flags we passed in -- is what makes the reference true.
+them. Reading them out of the bytes the Audio API served -- rather than assuming
+canonical form because that is what upstream promises -- is what makes the
+reference true.
 
-It is also how the non-seekable-output bug is caught: ffmpeg writing FLAC to a
-pipe cannot seek back to fill in total_samples, so it leaves zero, and the
-reference would claim every call is 0 seconds long.
+It is also how a header with no duration is caught: an encoder writing FLAC to
+a pipe cannot seek back to fill in total_samples, so it leaves zero, and the
+reference would claim every such call is 0 seconds long.
 """
 
 import pytest
@@ -33,8 +34,8 @@ def test_derives_duration():
 
 
 def test_reads_non_canonical_parameters_faithfully():
-    """The parser reports what is there; enforcing canonical form is the
-    transcoder's job, and conflating the two hides real mismatches."""
+    """The parser reports what is there; deciding whether that is canonical is
+    the hydrator's job, and conflating the two hides real mismatches."""
     info = read_streaminfo(flac_bytes(sample_rate=44100, channels=2, bits=24))
 
     assert info.sample_rate == 44100

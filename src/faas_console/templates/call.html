@@ -53,9 +53,9 @@
     <p class="callout warn">
       Measured duration disagrees with the reference by
       {{ "%.1f"|format(trace.duration_disagreement) }}s. A truncated upload
-      hydrates <em>successfully</em> into a FLAC of the wrong length &mdash; ffmpeg
-      resyncs and returns what survived &mdash; so this disagreement is the only
-      signal that it happened.
+      hydrates <em>successfully</em> into a FLAC of the wrong length &mdash; the
+      header still claims the original duration &mdash; so this disagreement is
+      the only signal that it happened.
     </p>
   {% endif %}
 

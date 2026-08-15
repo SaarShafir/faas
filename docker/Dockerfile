@@ -1,17 +1,22 @@
-# Images for the local stack. One file, three targets, because the only real
-# differences are which extras get installed and whether ffmpeg is present.
+# Images for the local stack. One file, four targets, because the only real
+# differences are which extras get installed.
 #
 #   docker build --target function -t faas-function .
 #   docker build --target hydrator -t faas-hydrator .
+#   docker build --target console  -t faas-console  .
 #   docker build --target harness  -t faas-harness  .
+#
+# No encoder in any of the serving images: audio arrives from the Audio API as
+# canonical FLAC and is stored as-is, so libsndfile is the whole audio
+# dependency. Only the stress harness carries ffmpeg, and only to *make* a
+# corpus.
 #
 # The UID/GID handling is not local-stack theatre. §11's target is OpenShift,
 # which assigns a random UID at run time and puts it in group 0 -- so anything
 # the process writes has to be group-writable, and nothing may assume it can
-# write to $HOME or to a path owned by a specific user. Getting that wrong shows
-# up first in the hydrator, where ffmpeg writes scratch files per call. Building
-# it in here means the local stack runs under the same constraint rather than
-# discovering it during a deployment.
+# write to $HOME or to a path owned by a specific user. Building it in here
+# means the local stack runs under the same constraint rather than discovering
+# it during a deployment.
 
 FROM python:3.12-slim AS base
 
@@ -25,7 +30,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     # Scratch space, group-writable, for a process whose UID is not known until
     # it starts. TMPDIR is what tempfile.TemporaryDirectory honours, which is
-    # what the transcoder uses.
+    # what the console sandbox uses.
     TMPDIR=/scratch \
     PYTHONPATH=/app/src:/app
 
@@ -86,11 +91,9 @@ CMD ["sh", "-c", "exec python -m functions.${FAAS_FUNCTION}.function"]
 FROM base AS hydrator
 
 USER root
-# The whole input-format zoo is ffmpeg's problem, and keeping it here is what
-# lets the function image depend on nothing heavier than libsndfile.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# No encoder: encoding is settled upstream of the Audio API, so the hydrator
+# fetches FLAC, checks the header and stores the bytes. Same dependencies as a
+# function image.
 RUN pip install --no-cache-dir ".[hydrator,metrics,events]"
 USER 1001:0
 
@@ -111,12 +114,12 @@ CMD ["faas-hydrator"]
 FROM base AS console
 
 USER root
-# git commits edits to a branch. ffmpeg because the sandbox transcodes corpus
-# audio to canonical FLAC exactly as the hydrator does -- feeding a function
-# anything else would make the console's answer differ from the platform's,
-# which is the one thing it must not do. No docker CLI: pause talks to the
-# Engine API over its socket, which needs nothing installed.
-RUN apt-get update     && apt-get install -y --no-install-recommends git ffmpeg     && rm -rf /var/lib/apt/lists/*
+# git commits edits to a branch. No encoder: the sandbox feeds a function the
+# corpus file unchanged, which is precisely what the hydrator would have
+# stored, so the console's answer cannot differ from the platform's. No docker
+# CLI either: pause talks to the Engine API over its socket, which needs
+# nothing installed.
+RUN apt-get update     && apt-get install -y --no-install-recommends git     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir ".[console,hydrator]"
 USER 1001:0
 
@@ -130,13 +133,17 @@ CMD ["uvicorn", "faas_console.app:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # -- the stress harness ---------------------------------------------------
 #
-# Corpus generator, Audio API stub, seeder, monitor. Needs ffmpeg to build the
-# corpus and requests to serve it; it is not a production image and never runs
-# outside compose.
+# Corpus generator, Audio API stub, seeder, monitor. This is the one image with
+# ffmpeg in it: the corpus is real encoded audio, and something has to play the
+# part of whatever encodes calls upstream in production. It is not a production
+# image and never runs outside compose.
 
 FROM hydrator AS harness
 
 USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir ".[hydrator,metrics,events]" boto3
 USER 1001:0
 
