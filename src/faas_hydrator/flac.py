@@ -2,8 +2,9 @@
 
 The reference (§4.2) states sample rate, channels and duration, and every
 function downstream trusts those without re-deriving them. So they are read out
-of the bytes ffmpeg actually produced rather than echoed back from the flags we
-passed -- the two disagree exactly when something has gone wrong.
+of the bytes the Audio API actually served rather than assumed from what
+canonical form is supposed to be -- the two disagree exactly when something
+upstream has gone wrong.
 
 Layout, from the FLAC format spec:
 
@@ -22,6 +23,12 @@ Layout, from the FLAC format spec:
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+# Canonical form (§4.1). Produced upstream of the Audio API; the hydrator only
+# checks that what it was handed says so.
+CANONICAL_SAMPLE_RATE = 16000
+CANONICAL_CHANNELS = 1
+CANONICAL_BITS = 16
 
 MAGIC = b"fLaC"
 STREAMINFO_BLOCK_TYPE = 0
@@ -43,9 +50,9 @@ class StreamInfo:
 
     @property
     def duration_known(self) -> bool:
-        # Zero means "unknown" in the format, not "empty". It is what ffmpeg
-        # leaves behind when it cannot seek back to patch the header -- writing
-        # to a pipe, for instance.
+        # Zero means "unknown" in the format, not "empty". It is what an
+        # encoder leaves behind when it cannot seek back to patch the header --
+        # writing to a pipe, for instance.
         return self.total_samples > 0
 
     @property

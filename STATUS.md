@@ -25,24 +25,31 @@ Last updated: 2026-08-14.
 | 8 | Deletion path | not started |
 
 The spec's gate — "do not build functions 2..N until step 4 is stable" — is met:
-`tests/functions/test_contract.py` runs a call end to end through real ffmpeg,
-a real object-store round trip, real libsndfile decoding and the real protobuf
-wire format.
+`tests/functions/test_contract.py` runs a call end to end through a fake Audio
+API serving real encoded audio, a real object-store round trip, real
+libsndfile decoding and the real protobuf wire format.
+
+**The hydrator no longer transcodes.** The Audio API serves canonical FLAC
+already, so `Transcoder` and its ffmpeg subprocess are gone; the hydrator
+fetches, checks the STREAMINFO header against canonical form, and stores the
+bytes unchanged. ffmpeg survives only where it always played a second role: as
+the thing that *makes* test input and the stress corpus, standing in for
+whatever encodes calls upstream in production.
 
 ## Tests
 
-247 total. The unit suite runs in ~25s and is the default; the broker suite
+319 total. The unit suite runs in ~25s and is the default; the broker suite
 needs Docker and runs in ~4min.
 
 ```bash
-pytest                 # 235 unit tests
+pytest                 # 307 unit tests
 pytest -m kafka        # 12 broker tests, needs Docker
 ```
 
 | Area | Tests |
 |---|---|
 | SDK core (offsets, pool, runner, failure handling, results, config, codecs) | 115 |
-| Hydrator (flac, transcode, metadata, hydrator, pipeline) | 72 |
+| Hydrator (flac, metadata, hydrator, pipeline) | 48 |
 | Functions (ten of them) + contract | 43 |
 | Object store and Audio API stub | 12 |
 | Broker (poll interval, commits, partitioner) | 12 |
@@ -57,8 +64,9 @@ Everything below is installed and working on this machine.
 - `.venv` — pytest, ruff, PyYAML, protobuf, grpcio-tools, soundfile, numpy,
   confluent-kafka, testcontainers (unused, see below).
 - **ffmpeg 9.0** via winget (`Gyan.FFmpeg`). On PATH for new shells; older shells
-  need a restart. Without it the transcode and contract tests skip rather than
-  fail — but they are the ones worth having.
+  need a restart. Nothing in the platform itself uses it any more, but the
+  contract test and the stress corpus need it to make input, and skip rather
+  than fail without it.
 - **buf 1.72** on PATH. `buf lint` and `buf breaking` both run; `scripts/gen_proto.py`
   now takes the `buf generate` path, which is why the generated files carry
   managed-mode options the earlier protoc fallback did not emit.
@@ -117,12 +125,15 @@ function SIGKILLed and a hydrator SIGTERMed mid-flight.
    manifests, when they get written, will need `fsGroup: 0` for any writable
    mount.**
 
-3. **A truncated mp3 hydrates successfully.** Written into the corpus expecting
-   a decode failure; it is not one. ffmpeg and libsndfile both resync and return
-   the ~150s that survive, so a half-uploaded object becomes a valid FLAC of the
-   wrong length with only a warning nobody sees. Nothing in the pipeline compares
-   measured duration against the reference's claim — except `duration_rms`, which
-   reports both, which is now the end-to-end test of that decision.
+3. **A truncated FLAC hydrates successfully.** Written into the corpus expecting
+   a decode failure; it is not one. The header survives a mid-file cut and still
+   claims the original duration, so a half-uploaded object becomes a stored
+   object with a reference that lies about its length. That got sharper once the
+   hydrator stopped re-encoding: the corrupt bytes now reach the object store
+   verbatim rather than being resynced away by an intermediate transcode.
+   Nothing in the pipeline compares measured duration against the reference's
+   claim — except `duration_rms`, which reports both, which is now the
+   end-to-end test of that decision.
 
 ### Observations that are not bugs, but will bite
 
@@ -231,11 +242,19 @@ Three things the SDK gained for it:
 
 ## Decisions worth knowing about
 
-**The hydrator runs on the SDK's runner, not its own loop.** A transcode is
-seconds of work between polls — the same §5.2 problem a function has. Only the
-two ends differ: `JsonSourceDecoder` replaces the reference decoder and
-`ReferenceEmitter` publishes to the internal topic. Cost: one constructor
-argument (`decoder=`) on `FunctionRunner`.
+**The hydrator runs on the SDK's runner, not its own loop.** Fetching a file
+and storing it again is seconds of work between polls — the same §5.2 problem a
+function has. Only the two ends differ: `JsonSourceDecoder` replaces the
+reference decoder and `ReferenceEmitter` publishes to the internal topic. Cost:
+one constructor argument (`decoder=`) on `FunctionRunner`.
+
+**The hydrator does not transcode.** Encoding to canonical FLAC happens
+upstream of the Audio API now, so `process()` is fetch, verify the STREAMINFO
+header against canonical form, store, publish — no subprocess, no scratch
+files, no codec dependency at all. The verification step still exists and still
+rejects anything non-canonical as poison: the Audio API is a service the
+hydrator does not control, and a regression there should die at the hydrator's
+DLQ rather than reach every function silently.
 
 **`process()` returns `FunctionResult`, not §5.1's `Result`.** §6's `Result` is
 the wire envelope the SDK stamps with offsets, attempts and timestamps.
@@ -272,9 +291,10 @@ because the reasoning matters more than the diffs.
    `InlineWorkerPool` runs `process()` synchronously inside `submit()`, so work
    happens on the poll thread. Against a real broker it is evicted. Default is
    now `ProcessWorkerPool`. The hydrator keeps an inline pool deliberately: its
-   work is bounded by ffmpeg's own subprocess timeout, so the block is provably
-   inside `max.poll.interval.ms`, whereas a function's timeout is enforced
-   *between* poll iterations and cannot fire while inline work blocks.
+   work is one HTTP GET and one S3 PUT, each under its own client timeout, so
+   the block is provably inside `max.poll.interval.ms`, whereas a function's
+   timeout is enforced *between* poll iterations and cannot fire while inline
+   work blocks.
 3. **The murmur2 test compared against the wrong hash.** Implementation was
    right; librdkafka's `consistent` partitioner is CRC32, and only
    `murmur2`/`murmur2_random` are Java-compatible. Agrees on all 69 keys now.
@@ -285,8 +305,7 @@ because the reasoning matters more than the diffs.
    `tests/hydrator/test_pipeline.py`.
 
 Load-bearing logic was mutation-checked rather than trusted: removing
-`min(pending)` from the ledger fails 4 tests, disabling backpressure fails 3,
-dropping `-ar` from the transcoder fails 10.
+`min(pending)` from the ledger fails 4 tests, disabling backpressure fails 3.
 
 ---
 
@@ -349,5 +368,6 @@ dropping `-ar` from the transcoder fails 10.
 - **The broker suite takes ~4min**, dominated by idle-detection waits in the
   redelivery helpers. Worth tightening if it becomes a CI annoyance.
 - **OpenShift gotchas (§11) are unaddressed.** No Dockerfiles yet. The random-UID
-  scratch-path problem will bite the hydrator first: ffmpeg temp files need a
-  directory group-writable by GID 0.
+  scratch-path problem now lands on the console sandbox rather than the
+  hydrator — its child-process temp files need a directory group-writable by
+  GID 0.

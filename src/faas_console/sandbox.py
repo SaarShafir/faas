@@ -13,8 +13,9 @@ it is on. Three things narrow the blast radius:
   - a subprocess, so an infinite loop or a segfault costs a process rather than
     the console;
   - a wall-clock timeout, killed rather than waited on;
-  - the same canonical mono 16 kHz FLAC a real function receives, decoded by
-    the real `AudioHandle`, so what you see here is what the platform will do.
+  - the same canonical mono 16 kHz FLAC a real function receives -- the corpus
+    file unchanged, since the hydrator stores what the Audio API served -- so
+    what you see here is what the platform will do.
 
 It is not a security boundary. A subprocess with a timeout stops accidents, not
 an attacker: edited code runs with the console's own privileges. Anyone who can
@@ -93,19 +94,23 @@ def available_audio() -> list[dict]:
 
 
 # The child process. Kept as source rather than a module so the sandbox has no
-# import path into the console itself -- it transcodes, decodes and calls
-# `process`, and can do nothing else by accident.
+# import path into the console itself -- it decodes and calls `process`, and can
+# do nothing else by accident.
 _CHILD = '''
 import io, json, sys, time, types
 
 spec = json.loads(sys.stdin.read())
 
-from faas_hydrator.transcode import Transcoder
+from faas_hydrator.flac import read_streaminfo
 import soundfile
 
-raw = open(spec["audio_path"], "rb").read()
-flac = Transcoder().to_canonical_flac(raw)
-samples, sample_rate = soundfile.read(io.BytesIO(flac.data), dtype="float32")
+# Corpus files are canonical FLAC already, exactly as the Audio API serves
+# them, so the sandbox hands the function the same bytes the hydrator would
+# have stored. Duration comes from STREAMINFO for the same reason it does in
+# the reference: it is what the platform would have claimed.
+flac = open(spec["audio_path"], "rb").read()
+info = read_streaminfo(flac)
+samples, sample_rate = soundfile.read(io.BytesIO(flac), dtype="float32")
 
 from faas_sdk.models import AudioReference
 
@@ -116,7 +121,7 @@ class Handle:
     def samples(self):
         return samples
     def bytes(self):
-        return flac.data
+        return flac
 
 module = types.ModuleType("sandboxed_function")
 module.__dict__["__name__"] = "sandboxed_function"
@@ -135,7 +140,7 @@ ref = AudioReference(
     call_id="sandbox",
     object_key="sandbox.flac",
     sample_rate=sample_rate,
-    duration_seconds=flac.duration_seconds,
+    duration_seconds=info.duration_seconds,
 )
 
 started = time.monotonic()

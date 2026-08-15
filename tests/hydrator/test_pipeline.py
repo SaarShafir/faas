@@ -2,9 +2,9 @@
 
 The spec says to build the SDK before the hydrator (§5) because poll/work
 decoupling and commit correctness are miserable to change later. The hydrator
-has exactly the same problem -- a transcode is seconds of work between polls --
-so it runs on the same runner rather than growing a second copy of the hardest
-code in the system.
+has exactly the same problem -- a file fetch and a store round-trip are seconds
+of work between polls -- so it runs on the same runner rather than growing a
+second copy of the hardest code in the system.
 
 What differs is only the two ends: the input is source metadata instead of an
 AudioReference, and the output is a reference on the internal topic instead of
@@ -43,7 +43,7 @@ def test_a_call_is_hydrated_end_to_end(hydrator_runner, consumer, producer, obje
     consumer.feed(_message(offset=10, call_id="c1"))
 
     hydrator_runner.run_once()  # dispatch
-    hydrator_runner.pool.run_pending()  # transcode
+    hydrator_runner.pool.run_pending()  # fetch + store
     hydrator_runner.run_once()  # publish + commit
 
     (record,) = _references(producer)
@@ -94,11 +94,12 @@ def test_unparseable_metadata_goes_straight_to_the_dlq(
     assert consumer.commits == [[((INPUT_TOPIC, 0), 11)]]
 
 
-def test_a_file_ffmpeg_cannot_read_reaches_the_dlq_without_retrying(
-    hydrator_runner, consumer, producer, ffmpeg, hydrator_config
+def test_audio_that_is_not_flac_reaches_the_dlq_without_retrying(
+    hydrator_runner, consumer, producer, audio_api, hydrator_config
 ):
-    ffmpeg.returncode = 1
-    ffmpeg.stderr = b"Invalid data found when processing input"
+    """An upstream error page served as audio is the likeliest real incident,
+    and it will not become FLAC on the third attempt."""
+    audio_api.default = b"<!doctype html>\n<h1>502 Bad Gateway</h1>"
 
     consumer.feed(_message(offset=10, call_id="c1"))
     hydrator_runner.run_once()
@@ -113,12 +114,12 @@ def test_a_file_ffmpeg_cannot_read_reaches_the_dlq_without_retrying(
 
 
 def test_no_reference_is_published_for_a_failed_call(
-    hydrator_runner, consumer, producer, ffmpeg, object_store
+    hydrator_runner, consumer, producer, audio_api, object_store
 ):
     """Which is the gap worth knowing about: a call that fails hydration is
     invisible downstream. The DLQ holds it for replay, but nothing on any topic
     says it was ever meant to exist."""
-    ffmpeg.returncode = 1
+    audio_api.default = b"not audio at all"
 
     consumer.feed(_message(offset=10, call_id="c1"))
     hydrator_runner.run_once()
@@ -177,9 +178,10 @@ def test_a_store_that_keeps_failing_eventually_reaches_the_dlq(
     assert _references(producer) == []
 
 
-def test_the_poll_loop_keeps_running_during_a_transcode(hydrator_runner, consumer):
-    """Same failure mode as §5.2: a transcode is long enough that a blocking
-    loop would blow past max.poll.interval.ms under load."""
+def test_the_poll_loop_keeps_running_while_a_call_is_in_flight(hydrator_runner, consumer):
+    """Same failure mode as §5.2: fetching a 5 MB file and storing it again is
+    long enough that a blocking loop would blow past max.poll.interval.ms under
+    load."""
     consumer.feed(_message(offset=10, call_id="c1"))
     hydrator_runner.run_once()
 

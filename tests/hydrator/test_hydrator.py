@@ -1,15 +1,16 @@
 """The hydrator itself (spec §4.1).
 
-Per message: parse metadata, GET audio by id, transcode to canonical FLAC, PUT
-to a deterministic key, publish the reference, commit. Keep it dumb -- at 17
-files/sec it will never be the bottleneck.
+Per message: parse metadata, GET audio by id, PUT those bytes to a
+deterministic key, publish the reference, commit. The Audio API serves
+canonical FLAC, so nothing here touches the codec -- what it fetched is what it
+stores, and the reference is read out of the same bytes.
 
 The ordering in that list is load-bearing and is what most of this file tests.
 """
 
 import pytest
 
-from faas_hydrator.testing import source_record
+from faas_hydrator.testing import flac_bytes, source_record
 from faas_sdk.codec import JsonCodec
 from faas_sdk.errors import PoisonMessageError
 from faas_sdk.models import Status
@@ -19,8 +20,8 @@ def _reference(outcome, codec=None):
     return (codec or JsonCodec()).decode_reference(outcome.payload)
 
 
-def test_publishes_a_reference_describing_what_it_stored(hydrator, object_store):
-    outcome = hydrator.process(source_record(call_id="c1"), _audio(b"raw mp3"))
+def test_publishes_a_reference_describing_what_it_stored(hydrator, object_store, source_audio):
+    outcome = hydrator.process(source_record(call_id="c1"), _audio(source_audio))
     ref = _reference(outcome)
 
     assert ref.call_id == "c1"
@@ -28,14 +29,33 @@ def test_publishes_a_reference_describing_what_it_stored(hydrator, object_store)
     assert ref.sample_rate == 16000
     assert ref.channels == 1
     assert ref.duration_seconds == 300.0
-    assert object_store.objects["c1.flac"].startswith(b"fLaC")
+    assert object_store.objects["c1.flac"] == source_audio
 
 
-def test_object_key_is_deterministic(hydrator, object_store):
+def test_the_bytes_are_stored_exactly_as_they_came_off_the_audio_api(
+    hydrator, object_store, source_audio
+):
+    """The whole point of the simplification: no re-encode, so nothing can
+    change the samples between the API and the object store."""
+    hydrator.process(source_record(call_id="c1"), _audio(source_audio))
+
+    assert object_store.objects["c1.flac"] is source_audio
+
+
+def test_the_reference_describes_the_bytes_not_what_canonical_should_be(hydrator, object_store):
+    """Read from STREAMINFO, so a reference can never claim a duration the
+    object does not have."""
+    audio = flac_bytes(total_samples=16000 * 42)
+    outcome = hydrator.process(source_record(call_id="c1"), _audio(audio))
+
+    assert _reference(outcome).duration_seconds == 42.0
+
+
+def test_object_key_is_deterministic(hydrator, object_store, source_audio):
     """Spec §4.1. Reprocessing after a crash overwrites identically, which is
     what makes at-least-once delivery harmless here."""
-    hydrator.process(source_record(call_id="c1"), _audio())
-    hydrator.process(source_record(call_id="c1"), _audio())
+    hydrator.process(source_record(call_id="c1"), _audio(source_audio))
+    hydrator.process(source_record(call_id="c1"), _audio(source_audio))
 
     assert list(object_store.objects) == ["c1.flac"]
 
@@ -55,12 +75,32 @@ def test_storing_the_object_is_part_of_processing_not_of_publishing(hydrator, ob
     assert outcome.payload
 
 
-def test_nothing_is_stored_when_transcoding_fails(hydrator, ffmpeg, object_store):
-    ffmpeg.returncode = 1
-    ffmpeg.stderr = b"Invalid data found when processing input"
+def test_audio_that_is_not_flac_is_poison_and_is_never_stored(hydrator, object_store):
+    """Bytes the Audio API already returned will be the same bytes on the third
+    attempt, so retrying only delays the DLQ and burns quota."""
+    with pytest.raises(PoisonMessageError) as excinfo:
+        hydrator.process(source_record(call_id="c1"), _audio(b"<!doctype html>502"))
 
-    with pytest.raises(PoisonMessageError):
-        hydrator.process(source_record(call_id="c1"), _audio())
+    assert excinfo.value.retryable is False
+    assert object_store.objects == {}
+
+
+def test_flac_that_is_not_canonical_is_rejected(hydrator, object_store):
+    """Encoding is upstream's job now. This is the one place a regression there
+    is caught before it becomes every function's problem at once."""
+    with pytest.raises(PoisonMessageError, match="canonical"):
+        hydrator.process(
+            source_record(call_id="c1"), _audio(flac_bytes(sample_rate=44100, channels=2))
+        )
+
+    assert object_store.objects == {}
+
+
+def test_flac_with_an_unknown_duration_is_rejected(hydrator, object_store):
+    """Rather than publishing a reference that claims the call is 0 seconds
+    long -- which every downstream throughput figure would then believe."""
+    with pytest.raises(PoisonMessageError, match="duration"):
+        hydrator.process(source_record(call_id="c1"), _audio(flac_bytes(total_samples=0)))
 
     assert object_store.objects == {}
 
@@ -85,8 +125,10 @@ def test_source_metadata_rides_along_opaquely(hydrator):
 
 
 def test_metadata_is_not_written_into_the_object(hydrator, object_store):
-    """Spec §4.1: one source of truth. The bytes in S3 carry no tenant, no
-    call id, nothing that would have to be rewritten when the schema moves."""
+    """Spec §4.1: one source of truth. The bytes in S3 carry no tenant, no call
+    id, nothing that would have to be rewritten when the schema moves -- and
+    now that the hydrator only copies, that is a property of what the Audio API
+    serves rather than of a flag we pass an encoder."""
     raw = b'{"tenant": "acme"}'
     hydrator.process(source_record(call_id="c1", source_metadata=raw), _audio())
 
@@ -121,7 +163,7 @@ def test_result_is_a_success_with_the_reference_as_payload(hydrator):
     assert outcome.payload
 
 
-def _audio(raw: bytes = b"raw input audio"):
+def _audio(raw: bytes | None = None):
     from faas_hydrator.testing import FakeSourceAudio
 
     return FakeSourceAudio(raw)

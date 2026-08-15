@@ -114,8 +114,9 @@ spec:
               value: {{ $.Values.audioApi.url | quote }}
             {{- end }}
             # Scratch has to be somewhere the process can write, whatever UID
-            # it was given. TMPDIR is what tempfile honours, which is what the
-            # transcoder uses for ffmpeg's working files.
+            # it was given. TMPDIR is what tempfile honours, which is what any
+            # process here that writes scratch files (the console sandbox, a
+            # function decoding audio) relies on.
             - name: TMPDIR
               value: /scratch
             {{- with $function.env }}

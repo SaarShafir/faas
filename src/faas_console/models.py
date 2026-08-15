@@ -119,7 +119,8 @@ class CallTrace:
         """Measured duration against what the reference claims.
 
         A truncated upload hydrates successfully into a FLAC of the wrong
-        length -- ffmpeg resyncs and returns what survived -- so the only
+        length -- the header still claims the original duration, and the
+        hydrator only copies bytes rather than re-deriving them -- so the only
         signal is a function that measured the audio disagreeing with the
         hydrator that described it.
         """

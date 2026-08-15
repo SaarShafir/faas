@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import signal
 
 from faas_sdk.clock import SystemClock
@@ -27,7 +26,6 @@ from .audioapi import AudioApiClient, source_audio_handle_factory
 from .emitter import ReferenceEmitter
 from .hydrator import Hydrator
 from .metadata import JsonSourceDecoder
-from .transcode import Transcoder
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +39,6 @@ def build_runner(
     producer=None,
     object_store=None,
     audio_client=None,
-    transcoder=None,
     codec=None,
     metrics=None,
     events=None,
@@ -79,18 +76,6 @@ def build_runner(
 
         codec = ProtobufCodec()
 
-    if transcoder is None:
-        # Fail at boot, not per message: a missing binary would otherwise DLQ
-        # every record identically until someone noticed.
-        ffmpeg = os.environ.get("FAAS_FFMPEG", "ffmpeg")
-        if shutil.which(ffmpeg) is None:
-            raise RuntimeError(f"ffmpeg not found on PATH as {ffmpeg!r}; the image is broken")
-        transcoder = Transcoder(
-            ffmpeg=ffmpeg,
-            compression_level=int(os.environ.get("FAAS_FLAC_COMPRESSION_LEVEL", "0")),
-            timeout_seconds=config.per_file_timeout_seconds,
-        )
-
     if object_store is None:
         from faas_sdk.objectstore import S3ObjectStore
 
@@ -112,7 +97,7 @@ def build_runner(
             num_partitions_by_topic={config.results_topic: config.results_topic_partitions},
         )
 
-    hydrator = Hydrator(transcoder=transcoder, object_store=object_store, codec=codec, clock=clock)
+    hydrator = Hydrator(object_store=object_store, codec=codec, clock=clock)
 
     # An inline pool is safe *here*, unlike for a function (see
     # faas_sdk.bootstrap), and the difference is worth being precise about.
@@ -120,8 +105,9 @@ def build_runner(
     # Inline work blocks the poll loop, so it is only safe when the block is
     # bounded below max.poll.interval.ms. `consumer_config` sets that interval
     # to per_file_timeout x in_flight + 60s, and the hydrator's work really is
-    # bounded by per_file_timeout: ffmpeg runs under a subprocess timeout the
-    # transcoder enforces itself. So the worst case is 60s inside the limit.
+    # bounded: an HTTP GET and an S3 PUT, both under their own client timeouts,
+    # with no CPU work of our own between them. So the worst case stays inside
+    # the limit.
     #
     # A function gets no such guarantee. Its per-file timeout is enforced by the
     # runner between poll iterations, which cannot run while inline work is

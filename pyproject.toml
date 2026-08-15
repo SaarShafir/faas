@@ -17,8 +17,8 @@ runtime = [
     "numpy>=1.26",
     "boto3>=1.34",
 ]
-# The hydrator image also needs ffmpeg on PATH -- a system package, not a
-# Python one. main.py checks for it at boot rather than per message.
+# The hydrator needs no audio libraries at all: the Audio API serves canonical
+# FLAC and the hydrator stores those bytes unchanged, reading only the header.
 hydrator = [
     "confluent-kafka>=2.5",
     "boto3>=1.34",

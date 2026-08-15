@@ -1,13 +1,13 @@
 """Test doubles for the hydrator.
 
-`flac_bytes` builds a FLAC header by hand so the transcode and header-parsing
-paths are testable without ffmpeg installed, and `FakeFfmpeg` stands in for the
-subprocess so the argv the transcoder builds can be asserted directly.
+`flac_bytes` builds a FLAC header by hand, so the header-parsing path and
+everything downstream of it are testable without an encoder installed. It is
+also what the fake Audio API serves by default: canonical FLAC is what the real
+one returns.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 
 from .flac import MAGIC, STREAMINFO_LENGTH
@@ -43,58 +43,11 @@ def flac_bytes(
     return MAGIC + header + streaminfo + frames
 
 
-class FakeFfmpeg:
-    """Stands in for `subprocess.run`.
-
-    Records the argv it was handed and writes canned output to whatever path
-    the transcoder asked for, so the file-not-pipe behaviour is observable.
-    """
-
-    def __init__(self, output: bytes | None = None, returncode: int = 0):
-        self.output = output if output is not None else flac_bytes()
-        self.returncode = returncode
-        self.stderr = b""
-        self.raises: BaseException | None = None
-
-        self.argv: list = []
-        self.calls = 0
-        self.input_path: str | None = None
-        self.output_path: str | None = None
-        self.stdin_bytes: bytes | None = None
-        self.input_bytes: bytes | None = None
-
-    def __call__(self, argv, capture_output=False, timeout=None, input=None, **kwargs):
-        self.calls += 1
-        self.argv = list(argv)
-        self.stdin_bytes = input
-        self.input_path = argv[argv.index("-i") + 1]
-        self.output_path = argv[-1]
-
-        with open(self.input_path, "rb") as handle:
-            self.input_bytes = handle.read()
-
-        if self.raises is not None:
-            raise self.raises
-
-        if self.returncode == 0:
-            with open(self.output_path, "wb") as handle:
-                handle.write(self.output)
-
-        return _Completed(self.returncode, self.stderr)
-
-
-class _Completed:
-    def __init__(self, returncode: int, stderr: bytes):
-        self.returncode = returncode
-        self.stdout = b""
-        self.stderr = stderr
-
-
 class FakeSourceAudio:
     """Lazy handle over canned bytes, counting fetches to prove read-once."""
 
-    def __init__(self, raw: bytes = b"raw input audio"):
-        self.raw = raw
+    def __init__(self, raw: bytes | None = None):
+        self.raw = flac_bytes() if raw is None else raw
         self.fetches = 0
         self.raises: BaseException | None = None
         self._cached: bytes | None = None
@@ -109,9 +62,9 @@ class FakeSourceAudio:
 
 
 class FakeAudioApi:
-    def __init__(self, audio: dict | None = None, default: bytes = b"raw input audio"):
+    def __init__(self, audio: dict | None = None, default: bytes | None = None):
         self.audio = dict(audio or {})
-        self.default = default
+        self.default = flac_bytes() if default is None else default
         self.requested: list = []
 
     def get_audio(self, audio_id: str) -> bytes:
@@ -133,7 +86,3 @@ def source_record(
         ingested_at=ingested_at,
         source_metadata=source_metadata,
     )
-
-
-def path_exists(path: str | None) -> bool:
-    return bool(path) and os.path.exists(path)

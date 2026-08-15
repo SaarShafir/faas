@@ -5,8 +5,7 @@ import pytest
 from faas_hydrator.emitter import ReferenceEmitter
 from faas_hydrator.hydrator import Hydrator
 from faas_hydrator.metadata import JsonSourceDecoder
-from faas_hydrator.testing import FakeAudioApi, FakeFfmpeg, flac_bytes
-from faas_hydrator.transcode import Transcoder
+from faas_hydrator.testing import FakeAudioApi, flac_bytes
 from faas_sdk.codec import JsonCodec
 from faas_sdk.config import FunctionConfig
 from faas_sdk.dlq import DeadLetterQueue
@@ -18,23 +17,14 @@ INTERNAL_TOPIC = "faas.audio.internal"
 
 
 @pytest.fixture
-def ffmpeg():
-    return FakeFfmpeg(output=flac_bytes(total_samples=16000 * 300))
+def source_audio() -> bytes:
+    """What the Audio API serves: canonical FLAC, five minutes of it."""
+    return flac_bytes(total_samples=16000 * 300)
 
 
 @pytest.fixture
-def transcoder(ffmpeg):
-    return Transcoder(run=ffmpeg)
-
-
-@pytest.fixture
-def hydrator(transcoder, object_store, clock):
-    return Hydrator(
-        transcoder=transcoder,
-        object_store=object_store,
-        codec=JsonCodec(),
-        clock=clock,
-    )
+def hydrator(object_store, clock):
+    return Hydrator(object_store=object_store, codec=JsonCodec(), clock=clock)
 
 
 @pytest.fixture
@@ -58,8 +48,8 @@ def hydrator_config() -> FunctionConfig:
 
 
 @pytest.fixture
-def audio_api():
-    return FakeAudioApi()
+def audio_api(source_audio):
+    return FakeAudioApi(default=source_audio)
 
 
 @pytest.fixture
